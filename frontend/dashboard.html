@@ -1,0 +1,1508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Financial Dashboard - Adaptive</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-light: #3b82f6;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --dark: #1f2937;
+            --light: #f3f4f6;
+            --white: #ffffff;
+            --border: #e5e7eb;
+            --shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+            --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -2px rgba(0,0,0,0.05);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--light);
+            color: var(--dark);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--primary), var(--primary-light));
+            color: var(--white);
+            padding: 30px;
+            border-radius: 12px;
+            margin-bottom: 30px;
+            box-shadow: var(--shadow-lg);
+        }
+
+        .header h1 {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .header .subtitle {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        .header .meta {
+            display: flex;
+            gap: 20px;
+            margin-top: 15px;
+            font-size: 13px;
+            opacity: 0.85;
+        }
+
+        .header .meta span {
+            background: rgba(255,255,255,0.15);
+            padding: 4px 12px;
+            border-radius: 20px;
+        }
+
+        /* KPI Cards */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .kpi-card {
+            background: var(--white);
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: var(--shadow);
+            border-left: 4px solid var(--primary);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .kpi-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .kpi-card.positive { border-left-color: var(--success); }
+        .kpi-card.negative { border-left-color: var(--danger); }
+        .kpi-card.neutral { border-left-color: var(--warning); }
+
+        .kpi-card .label {
+            font-size: 13px;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .kpi-card .value {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--dark);
+            margin-bottom: 8px;
+        }
+
+        .kpi-card .change {
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .kpi-card .change.positive { color: var(--success); }
+        .kpi-card .change.negative { color: var(--danger); }
+        
+        .kpi-card .change-abs {
+            font-size: 11px;
+            color: #718096;
+            margin-top: 2px;
+        }
+
+        /* Charts Grid */
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .chart-card {
+            background: var(--white);
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: var(--shadow);
+        }
+
+        .chart-card h3 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: var(--dark);
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+
+        /* Section Tables */
+        .section-card {
+            background: var(--white);
+            border-radius: 12px;
+            margin-bottom: 24px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .section-header {
+            background: linear-gradient(135deg, #374151, #4b5563);
+            color: var(--white);
+            padding: 16px 24px;
+            font-weight: 600;
+            font-size: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .section-header .row-count {
+            background: rgba(255,255,255,0.2);
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+        }
+
+        .table-wrapper {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        th {
+            background: var(--light);
+            padding: 12px 16px;
+            text-align: left;
+            font-weight: 600;
+            color: #374151;
+            border-bottom: 2px solid var(--border);
+            white-space: nowrap;
+        }
+
+        th.numeric {
+            text-align: right;
+        }
+
+        td {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: middle;
+        }
+
+        td.numeric {
+            text-align: right;
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            font-size: 13px;
+        }
+
+        td.label-cell {
+            max-width: 350px;
+        }
+
+        tr:hover {
+            background: #f9fafb;
+        }
+
+        tr.row-section {
+            background: linear-gradient(135deg, #e0e7ff, #c7d2fe);
+            font-weight: 700;
+        }
+
+        tr.row-section td {
+            color: #3730a3;
+            padding: 14px 16px;
+        }
+
+        tr.row-total {
+            background: linear-gradient(135deg, #fef3c7, #fde68a);
+            font-weight: 600;
+        }
+
+        tr.row-total td {
+            color: #92400e;
+        }
+
+        .note-badge {
+            display: inline-block;
+            background: var(--primary);
+            color: var(--white);
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            margin-left: 8px;
+        }
+
+        .value-positive { color: var(--success); }
+        .value-negative { color: var(--danger); }
+
+        /* Loading & Error States */
+        .loading {
+            text-align: center;
+            padding: 60px;
+            color: #6b7280;
+        }
+
+        .loading .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid var(--border);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .error-banner {
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            color: #991b1b;
+            padding: 16px 24px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .warning-banner {
+            background: #fffbeb;
+            border: 1px solid #fcd34d;
+            color: #92400e;
+            padding: 16px 24px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .warning-banner .icon {
+            font-size: 24px;
+        }
+
+        .warning-banner .message {
+            flex: 1;
+        }
+
+        .warning-banner .title {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        /* Input Area */
+        .input-section {
+            background: var(--white);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 30px;
+            box-shadow: var(--shadow);
+        }
+
+        .input-section h3 {
+            margin-bottom: 16px;
+            font-size: 16px;
+        }
+
+        .input-section textarea {
+            width: 100%;
+            height: 200px;
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            font-size: 12px;
+            padding: 16px;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            resize: vertical;
+        }
+
+        .input-section textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        .input-section .actions {
+            margin-top: 16px;
+            display: flex;
+            gap: 12px;
+        }
+
+        .btn {
+            padding: 10px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: var(--white);
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-light);
+        }
+
+        .btn-secondary {
+            background: var(--light);
+            color: var(--dark);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover {
+            background: var(--border);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .container { padding: 12px; }
+            .header { padding: 20px; }
+            .header h1 { font-size: 22px; }
+            .kpi-card .value { font-size: 22px; }
+            .charts-grid { grid-template-columns: 1fr; }
+            th, td { padding: 8px 12px; font-size: 12px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- JSON Input Section -->
+        <div class="input-section" id="inputSection">
+            <h3>📊 Paste Financial JSON Data</h3>
+            <textarea id="jsonInput" placeholder='{"columns": [...], "rows": [...]}'></textarea>
+            <div class="actions">
+                <button class="btn btn-primary" onclick="loadJSON()">Load Dashboard</button>
+                <button class="btn btn-secondary" onclick="loadExample()">Load Example</button>
+            </div>
+        </div>
+
+        <!-- Dashboard Content (hidden until data loaded) -->
+        <div id="dashboardContent" style="display: none;">
+            <!-- Header -->
+            <div class="header" id="dashboardHeader">
+                <h1 id="titleText">Financial Statement</h1>
+                <div class="subtitle" id="subtitleText">Automatically generated dashboard</div>
+                <div class="meta" id="metaInfo"></div>
+            </div>
+
+            <!-- Coverage Warning Banner (hidden by default) -->
+            <div id="coverageWarning" class="warning-banner" style="display: none;">
+                <span class="icon">⚠️</span>
+                <div class="message">
+                    <div class="title">Incomplete Data Extraction</div>
+                    <div class="detail">Some rows may be missing. Please verify the extracted data against the source document.</div>
+                </div>
+            </div>
+
+            <!-- KPI Cards -->
+            <div class="kpi-grid" id="kpiGrid"></div>
+
+            <!-- Charts -->
+            <div class="charts-grid" id="chartsGrid"></div>
+
+            <!-- Section Tables -->
+            <div id="sectionsContainer"></div>
+        </div>
+    </div>
+
+    <script>
+    // =============================================================================
+    // ADAPTIVE FINANCIAL DASHBOARD - Core Engine (PRODUCTION SAFE)
+    // =============================================================================
+
+    class FinancialDashboard {
+        constructor(data) {
+            this.rawData = data;
+            this.columns = data.columns || [];
+            this.rows = data.rows || [];
+            
+            // =================================================================
+            // COVERAGE CHECK
+            // =================================================================
+            this.coverageComplete = data._coverage_complete !== false; // true unless explicitly false
+            
+            this.schema = this.detectSchema();
+            this.sections = this.groupBySections();
+            this.kpis = this.extractKPIs();
+        }
+
+        // =========================================================================
+        // SCHEMA DETECTION
+        // =========================================================================
+
+        detectSchema() {
+            const schema = {
+                labelColumn: null,
+                noteColumn: null,
+                dateColumns: [],
+                variationColumns: [],
+                percentColumns: [],
+                numericColumns: [],
+                allColumns: this.columns
+            };
+
+            for (const col of this.columns) {
+                const colLower = (col || '').toLowerCase();
+                
+                // Label column detection
+                if (this.isLabelColumn(col)) {
+                    schema.labelColumn = col;
+                    continue;
+                }
+
+                // Note column detection
+                if (this.isNoteColumn(col)) {
+                    schema.noteColumn = col;
+                    continue;
+                }
+
+                // Date column detection (DD/MM/YYYY, YYYY, 30/06/2024, etc.)
+                if (this.isDateColumn(col)) {
+                    schema.dateColumns.push(col);
+                    schema.numericColumns.push(col);
+                    continue;
+                }
+
+                // Variation/percent columns
+                if (this.isVariationColumn(col)) {
+                    if (col.includes('%') || colLower.includes('percent') || colLower.includes('pourcentage')) {
+                        schema.percentColumns.push(col);
+                    } else {
+                        schema.variationColumns.push(col);
+                    }
+                    schema.numericColumns.push(col);
+                    continue;
+                }
+
+                // Check if column has numeric values
+                if (this.hasNumericValues(col)) {
+                    schema.numericColumns.push(col);
+                }
+            }
+
+            // Fallback: first column is label if not detected
+            if (!schema.labelColumn && this.columns.length > 0) {
+                schema.labelColumn = this.columns[0];
+            }
+
+            // =================================================================
+            // DATE SORTING (CRITICAL) - Sort chronologically, detect latest/previous
+            // =================================================================
+            if (schema.dateColumns.length > 0) {
+                schema.dateColumns = this.sortDatesChronologically(schema.dateColumns);
+                schema.latestDate = schema.dateColumns[schema.dateColumns.length - 1];
+                schema.previousDate = schema.dateColumns.length >= 2 
+                    ? schema.dateColumns[schema.dateColumns.length - 2] 
+                    : null;
+                schema.hasMultipleDates = schema.dateColumns.length >= 2;
+            } else {
+                schema.latestDate = null;
+                schema.previousDate = null;
+                schema.hasMultipleDates = false;
+            }
+
+            console.log('[Schema Detected]', schema);
+            console.log('[Time Comparison]', schema.hasMultipleDates ? 'ENABLED' : 'DISABLED', 
+                        '| Latest:', schema.latestDate, '| Previous:', schema.previousDate);
+            return schema;
+        }
+
+        // =========================================================================
+        // DATE PARSING & SORTING (PRODUCTION SAFE - NO new Date() for parsing)
+        // =========================================================================
+
+        parseDateToTimestamp(dateStr) {
+            if (!dateStr) return 0;
+            const str = String(dateStr).trim();
+
+            // =================================================================
+            // EXPLICIT PARSING - NO new Date() to avoid browser inconsistencies
+            // =================================================================
+
+            // Pattern 1: YYYY only (e.g., "2024")
+            if (/^\d{4}$/.test(str)) {
+                const year = parseInt(str, 10);
+                // Use Dec 31 of that year as timestamp (year * 10000 + 1231)
+                return year * 10000 + 1231;
+            }
+
+            // Pattern 2: DD/MM/YYYY or DD.MM.YYYY or DD-MM-YYYY
+            const ddmmyyyy = str.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+            if (ddmmyyyy) {
+                let day = parseInt(ddmmyyyy[1], 10);
+                let month = parseInt(ddmmyyyy[2], 10);
+                let year = parseInt(ddmmyyyy[3], 10);
+                if (year < 100) year += 2000; // 24 → 2024
+                // Return sortable integer: YYYYMMDD
+                return year * 10000 + month * 100 + day;
+            }
+
+            // Pattern 3: YYYY-MM-DD or YYYY/MM/DD
+            const yyyymmdd = str.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
+            if (yyyymmdd) {
+                const year = parseInt(yyyymmdd[1], 10);
+                const month = parseInt(yyyymmdd[2], 10);
+                const day = parseInt(yyyymmdd[3], 10);
+                return year * 10000 + month * 100 + day;
+            }
+
+            // NO FALLBACK to Date.parse() - return 0 for unrecognized formats
+            console.warn('[parseDateToTimestamp] Unrecognized date format:', str);
+            return 0;
+        }
+
+        sortDatesChronologically(dateColumns) {
+            return [...dateColumns].sort((a, b) => {
+                return this.parseDateToTimestamp(a) - this.parseDateToTimestamp(b);
+            });
+        }
+
+        isLabelColumn(col) {
+            const patterns = ['label', 'libellé', 'libelle', 'désignation', 'designation', 
+                            'description', 'poste', 'rubrique', 'intitulé', 'intitule', 'item'];
+            return patterns.some(p => (col || '').toLowerCase().includes(p));
+        }
+
+        isNoteColumn(col) {
+            const patterns = ['note', 'ref', 'référence', 'reference', 'renvoi'];
+            return patterns.some(p => (col || '').toLowerCase() === p || 
+                                      (col || '').toLowerCase().includes(p));
+        }
+
+        isDateColumn(col) {
+            if (!col) return false;
+            // Match: 31/12/2024, 30.06.2023, 2024, 2023-12-31, etc.
+            const datePatterns = [
+                /^\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}$/,  // DD/MM/YYYY
+                /^\d{2,4}[\/\-.]\d{1,2}[\/\-.]\d{1,2}$/,  // YYYY-MM-DD
+                /^\d{4}$/,                                  // YYYY
+                /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i,
+                /^(janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)/i
+            ];
+            return datePatterns.some(p => p.test(col.trim()));
+        }
+
+        isVariationColumn(col) {
+            if (!col) return false;
+            const patterns = ['variation', 'var', 'change', 'évolution', 'evolution', 
+                            'écart', 'ecart', 'diff', '%', 'percent', 'growth', 'croissance'];
+            return patterns.some(p => col.toLowerCase().includes(p));
+        }
+
+        hasNumericValues(col) {
+            let numericCount = 0;
+            const sampleSize = Math.min(this.rows.length, 10);
+            
+            for (let i = 0; i < sampleSize; i++) {
+                const val = this.rows[i]?.[col];
+                if (this.parseNumeric(val) !== null) {
+                    numericCount++;
+                }
+            }
+            return numericCount > sampleSize * 0.5;
+        }
+
+        // =========================================================================
+        // VALUE PARSING (PRODUCTION SAFE)
+        // =========================================================================
+
+        parseNumeric(value) {
+            // =================================================================
+            // HANDLE NULL/UNDEFINED/EMPTY
+            // =================================================================
+            if (value === null || value === undefined || value === '') return null;
+            
+            // Already a number
+            if (typeof value === 'number') {
+                return isNaN(value) ? null : value;
+            }
+            
+            let str = String(value).trim();
+            
+            // =================================================================
+            // IGNORE PLACEHOLDER VALUES
+            // =================================================================
+            if (str === '-' || str === '–' || str === '—' || str === 'N/A' || str === 'n/a') {
+                return null;
+            }
+            
+            // =================================================================
+            // HANDLE PERCENTAGE
+            // =================================================================
+            const isPercent = str.includes('%');
+            str = str.replace(/%/g, '');
+            
+            // =================================================================
+            // HANDLE NEGATIVE IN PARENTHESES: (123 456) → -123456
+            // =================================================================
+            const isNegativeParen = /^\([\d\s.,]+\)$/.test(str);
+            if (isNegativeParen) {
+                str = str.replace(/[()]/g, '');
+            }
+            
+            // =================================================================
+            // REMOVE ALL SPACES (thousand separators)
+            // =================================================================
+            str = str.replace(/\s/g, '');
+            
+            // =================================================================
+            // HANDLE EUROPEAN/US NUMBER FORMATS
+            // =================================================================
+            if (str.includes('.') && str.includes(',')) {
+                const lastDot = str.lastIndexOf('.');
+                const lastComma = str.lastIndexOf(',');
+                if (lastComma > lastDot) {
+                    // European: 1.234,56 → 1234.56
+                    str = str.replace(/\./g, '').replace(',', '.');
+                } else {
+                    // US: 1,234.56 → 1234.56
+                    str = str.replace(/,/g, '');
+                }
+            } else if (str.includes(',')) {
+                // Could be decimal comma or thousand separator
+                const parts = str.split(',');
+                if (parts.length === 2 && parts[1].length <= 2) {
+                    // Likely decimal: 123,45 → 123.45
+                    str = str.replace(',', '.');
+                } else {
+                    // Likely thousand separator: 1,234 → 1234
+                    str = str.replace(/,/g, '');
+                }
+            }
+            
+            // =================================================================
+            // FINAL PARSE
+            // =================================================================
+            const num = parseFloat(str);
+            if (isNaN(num)) return null;
+            
+            return isNegativeParen ? -Math.abs(num) : num;
+        }
+
+        formatNumber(value, isPercent = false) {
+            if (value === null || value === undefined) return '-';
+            
+            const num = typeof value === 'number' ? value : this.parseNumeric(value);
+            if (num === null) return String(value);
+            
+            if (isPercent) {
+                return num.toFixed(1) + '%';
+            }
+            
+            // Format with spaces as thousand separators (European style)
+            const formatted = Math.abs(num).toLocaleString('fr-FR', {
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 0
+            });
+            
+            return num < 0 ? `(${formatted})` : formatted;
+        }
+
+        // =========================================================================
+        // ROW FILTERING (PRODUCTION SAFE)
+        // =========================================================================
+
+        /**
+         * Get only valid data rows (exclude sections, empty rows)
+         * Use for charts and KPIs
+         */
+        getValidDataRows() {
+            return this.rows.filter(row => {
+                const rowType = (row.type || '').toLowerCase();
+                
+                // Only include data or total rows
+                if (rowType !== 'data' && rowType !== 'total' && rowType !== '') {
+                    return false;
+                }
+                
+                // Exclude section headers (detected by label)
+                const label = row[this.schema.labelColumn] || '';
+                if (this.isSectionHeader(label, row)) {
+                    return false;
+                }
+                
+                // Exclude rows with no numeric data in date columns
+                const hasNumeric = this.schema.dateColumns.some(col => {
+                    return this.parseNumeric(row[col]) !== null;
+                });
+                
+                return hasNumeric;
+            });
+        }
+
+        /**
+         * Get only total rows
+         */
+        getTotalRows() {
+            return this.rows.filter(row => {
+                const rowType = (row.type || '').toLowerCase();
+                const label = (row[this.schema.labelColumn] || '').toLowerCase();
+                return rowType === 'total' || label.includes('total');
+            });
+        }
+
+        /**
+         * Find variation column (if exists)
+         */
+        getVariationColumn() {
+            const varPatterns = ['variation montant', 'variation', 'écart', 'change'];
+            for (const col of this.columns) {
+                const colLower = col.toLowerCase();
+                if (varPatterns.some(p => colLower.includes(p)) && !colLower.includes('%')) {
+                    return col;
+                }
+            }
+            return null;
+        }
+
+        // =========================================================================
+        // SECTION GROUPING
+        // =========================================================================
+
+        groupBySections() {
+            const sections = [];
+            let currentSection = { name: 'General', rows: [] };
+
+            for (const row of this.rows) {
+                const rowType = (row.type || '').toLowerCase();
+                const label = row[this.schema.labelColumn] || '';
+
+                if (rowType === 'section' || this.isSectionHeader(label, row)) {
+                    // Save previous section if it has rows
+                    if (currentSection.rows.length > 0) {
+                        sections.push(currentSection);
+                    }
+                    // Start new section
+                    currentSection = { name: label || 'Section', rows: [] };
+                } else {
+                    currentSection.rows.push(row);
+                }
+            }
+
+            // Add last section
+            if (currentSection.rows.length > 0) {
+                sections.push(currentSection);
+            }
+
+            // If no sections found, create one with all rows
+            if (sections.length === 0 && this.rows.length > 0) {
+                sections.push({ name: 'Financial Data', rows: this.rows });
+            }
+
+            return sections;
+        }
+
+        isSectionHeader(label, row) {
+            if (!label) return false;
+            
+            // Check if row has no numeric values (typical for section headers)
+            const hasNumeric = this.schema.numericColumns.some(col => {
+                const val = row[col];
+                return val !== null && val !== undefined && val !== '' && this.parseNumeric(val) !== null;
+            });
+            
+            // Common section keywords
+            const sectionKeywords = ['actif', 'passif', 'capitaux', 'equity', 'assets', 'liabilities',
+                                    'bilan', 'résultat', 'result', 'cash', 'flux', 'engagement',
+                                    'hors bilan', 'off-balance'];
+            
+            const labelLower = label.toLowerCase();
+            const isKeyword = sectionKeywords.some(k => labelLower.includes(k));
+            
+            return !hasNumeric && (isKeyword || label === label.toUpperCase());
+        }
+
+        // =========================================================================
+        // KPI EXTRACTION (PRODUCTION SAFE)
+        // =========================================================================
+
+        extractKPIs() {
+            const kpis = [];
+            // Use schema's sorted dates (latestDate is most recent)
+            const latestDate = this.schema.latestDate;
+            const previousDate = this.schema.previousDate;
+            const hasTimeComparison = this.schema.hasMultipleDates;
+            
+            // =================================================================
+            // VARIATION COLUMN PRIORITY
+            // =================================================================
+            const variationCol = this.getVariationColumn();
+
+            // Find total rows using helper
+            const totalRows = this.getTotalRows();
+
+            // Extract top KPIs from totals
+            for (const row of totalRows.slice(0, 6)) {
+                const label = row[this.schema.labelColumn] || 'Total';
+                const currentValue = this.parseNumeric(row[latestDate]);
+                const previousValue = previousDate ? this.parseNumeric(row[previousDate]) : null;
+                
+                // FAILSAFE: Skip rows with no valid numeric data
+                if (currentValue === null) continue;
+
+                let change = null;
+                let changePercent = null;
+                let trend = null; // ↑, ↓, or →
+
+                // =================================================================
+                // PRIORITY 1: Use existing Variation column if available
+                // =================================================================
+                if (variationCol && row[variationCol]) {
+                    const varValue = this.parseNumeric(row[variationCol]);
+                    if (varValue !== null) {
+                        change = varValue;
+                    }
+                }
+
+                // =================================================================
+                // PRIORITY 2: Compute (latest - previous) if no variation column
+                // =================================================================
+                if (change === null && hasTimeComparison && previousValue !== null) {
+                    change = currentValue - previousValue;
+                }
+
+                // Calculate percentage change
+                if (change !== null && previousValue !== null && previousValue !== 0) {
+                    changePercent = ((change / Math.abs(previousValue)) * 100);
+                    
+                    // Determine trend indicator
+                    if (change > 0) trend = '↑';
+                    else if (change < 0) trend = '↓';
+                    else trend = '→';
+                }
+
+                // Override with explicit percent column if exists
+                const varPercentCol = this.schema.percentColumns[0];
+                if (varPercentCol && row[varPercentCol]) {
+                    const parsed = this.parseNumeric(row[varPercentCol]);
+                    if (parsed !== null) {
+                        changePercent = parsed;
+                        if (parsed > 0) trend = '↑';
+                        else if (parsed < 0) trend = '↓';
+                        else trend = '→';
+                    }
+                }
+
+                kpis.push({
+                    label: this.cleanLabel(label),
+                    value: currentValue,
+                    change: change,
+                    changePercent: changePercent,
+                    trend: trend,
+                    date: latestDate,
+                    hasTimeComparison: hasTimeComparison || (variationCol !== null)
+                });
+            }
+
+            return kpis;
+        }
+
+        cleanLabel(label) {
+            return (label || '')
+                .replace(/^total\s*/i, '')
+                .replace(/\s*total$/i, '')
+                .trim() || 'Total';
+        }
+
+        // =========================================================================
+        // CHART DATA GENERATION (CONDITIONAL BASED ON TIME DIMENSIONS)
+        // =========================================================================
+
+        generateChartData() {
+            const charts = [];
+            const hasMultipleDates = this.schema.hasMultipleDates;
+
+            // =================================================================
+            // CASE A: Multiple dates (>= 2) → Enable evolution chart
+            // =================================================================
+            if (hasMultipleDates) {
+                console.log('[Charts] Multiple dates detected - enabling evolution chart');
+                const evolutionData = this.generateEvolutionChart(this.schema.dateColumns);
+                if (evolutionData) charts.push(evolutionData);
+            } else {
+                console.log('[Charts] Single or no dates - evolution chart DISABLED');
+            }
+
+            // =================================================================
+            // ALWAYS: Comparison Bar Chart (totals for latest date)
+            // =================================================================
+            const comparisonData = this.generateComparisonChart();
+            if (comparisonData) charts.push(comparisonData);
+
+            // =================================================================
+            // ALWAYS: Distribution Pie Chart (first section)
+            // =================================================================
+            const distributionData = this.generateDistributionChart();
+            if (distributionData) charts.push(distributionData);
+
+            return charts;
+        }
+
+        generateEvolutionChart(dateColumns) {
+            // =================================================================
+            // FAILSAFE: Skip if not enough dates
+            // =================================================================
+            if (!dateColumns || dateColumns.length < 2) return null;
+
+            // Use ALL detected dates for multi-year support
+            const allDates = dateColumns; // Already sorted chronologically
+
+            // Priority 1: Total rows (use helper)
+            let chartRows = this.getTotalRows().slice(0, 5);
+
+            // Priority 2: Major section rows (if no totals)
+            if (chartRows.length === 0) {
+                const sectionKeywords = ['actif', 'passif', 'capitaux', 'assets', 'liabilities', 'equity'];
+                chartRows = this.getValidDataRows().filter(row => {
+                    const label = (row[this.schema.labelColumn] || '').toLowerCase();
+                    return sectionKeywords.some(k => label.includes(k));
+                }).slice(0, 5);
+            }
+
+            // Priority 3: Top valid data rows (fallback)
+            if (chartRows.length === 0) {
+                chartRows = this.getValidDataRows().slice(0, 5);
+            }
+
+            // =================================================================
+            // FAILSAFE: No valid rows found
+            // =================================================================
+            if (chartRows.length === 0) {
+                console.warn('[generateEvolutionChart] No valid rows for chart');
+                return null;
+            }
+
+            const datasets = [];
+            for (let idx = 0; idx < chartRows.length; idx++) {
+                const row = chartRows[idx];
+                const label = this.cleanLabel(row[this.schema.labelColumn]);
+                const data = [];
+                let validCount = 0;
+
+                // Use ALL dates for multi-year support
+                for (const col of allDates) {
+                    const val = this.parseNumeric(row[col]);
+                    data.push(val !== null ? val : null); // Keep null for missing
+                    if (val !== null) validCount++;
+                }
+
+                // =================================================================
+                // FAILSAFE: Skip series with insufficient valid data
+                // Require at least 2 valid points for a line chart
+                // =================================================================
+                if (validCount < 2) continue;
+
+                datasets.push({
+                    label: label,
+                    data: data,
+                    borderColor: this.getColor(idx),
+                    backgroundColor: this.getColor(idx, 0.1),
+                    tension: 0.3,
+                    fill: false,
+                    spanGaps: true // Handle null values gracefully
+                });
+            }
+
+            // =================================================================
+            // FAILSAFE: No valid datasets
+            // =================================================================
+            if (datasets.length === 0) {
+                console.warn('[generateEvolutionChart] No valid datasets');
+                return null;
+            }
+
+            return {
+                type: 'line',
+                title: 'Evolution Over Time',
+                data: {
+                    labels: allDates, // Use ALL dates for multi-year
+                    datasets: datasets
+                }
+            };
+        }
+
+        generateComparisonChart() {
+            const latestDate = this.schema.latestDate;
+            if (!latestDate) return null;
+
+            // Use helper to get total rows
+            const totals = this.getTotalRows().slice(0, 6);
+
+            if (totals.length < 2) return null;
+
+            // =================================================================
+            // FAILSAFE: Filter out rows with no valid numeric data
+            // =================================================================
+            const validTotals = totals.filter(row => {
+                return this.parseNumeric(row[latestDate]) !== null;
+            });
+
+            if (validTotals.length < 2) return null;
+
+            const labels = validTotals.map(row => this.cleanLabel(row[this.schema.labelColumn]));
+            const values = validTotals.map(row => this.parseNumeric(row[latestDate]));
+
+            return {
+                type: 'bar',
+                title: `Key Totals (${latestDate})`,
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Amount',
+                        data: values,
+                        backgroundColor: values.map((_, i) => this.getColor(i, 0.7)),
+                        borderColor: values.map((_, i) => this.getColor(i)),
+                        borderWidth: 1
+                    }]
+                }
+            };
+        }
+
+        generateDistributionChart() {
+            const latestDate = this.schema.latestDate;
+            if (!latestDate || this.sections.length === 0) return null;
+
+            // Use first section with data rows
+            const section = this.sections.find(s => s.rows.length >= 3);
+            if (!section) return null;
+
+            // Filter to data rows only (not totals/sections)
+            const dataRows = section.rows.filter(row => {
+                const type = (row.type || '').toLowerCase();
+                if (type === 'total' || type === 'section') return false;
+                // Must have valid numeric value
+                return this.parseNumeric(row[latestDate]) !== null;
+            }).slice(0, 8);
+
+            // =================================================================
+            // FAILSAFE: Need at least 2 valid rows for distribution
+            // =================================================================
+            if (dataRows.length < 2) return null;
+
+            const labels = dataRows.map(row => {
+                const label = row[this.schema.labelColumn] || '';
+                return label.length > 25 ? label.substring(0, 25) + '...' : label;
+            });
+            const values = dataRows.map(row => Math.abs(this.parseNumeric(row[latestDate])));
+
+            return {
+                type: 'doughnut',
+                title: `${section.name} Distribution`,
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: values,
+                        backgroundColor: values.map((_, i) => this.getColor(i, 0.7)),
+                        borderColor: values.map((_, i) => this.getColor(i)),
+                        borderWidth: 2
+                    }]
+                }
+            };
+        }
+
+        getColor(index, alpha = 1) {
+            const colors = [
+                `rgba(37, 99, 235, ${alpha})`,   // Blue
+                `rgba(16, 185, 129, ${alpha})`,  // Green
+                `rgba(245, 158, 11, ${alpha})`,  // Yellow
+                `rgba(239, 68, 68, ${alpha})`,   // Red
+                `rgba(139, 92, 246, ${alpha})`,  // Purple
+                `rgba(6, 182, 212, ${alpha})`,   // Cyan
+                `rgba(236, 72, 153, ${alpha})`,  // Pink
+                `rgba(34, 197, 94, ${alpha})`,   // Emerald
+            ];
+            return colors[index % colors.length];
+        }
+    }
+
+    // =============================================================================
+    // DASHBOARD RENDERER (PRODUCTION SAFE)
+    // =============================================================================
+
+    class DashboardRenderer {
+        constructor(dashboard) {
+            this.db = dashboard;
+            this.charts = [];
+        }
+
+        render() {
+            this.renderCoverageWarning();
+            this.renderHeader();
+            this.renderKPIs();
+            this.renderCharts();
+            this.renderSections();
+            
+            document.getElementById('inputSection').style.display = 'none';
+            document.getElementById('dashboardContent').style.display = 'block';
+        }
+
+        // =================================================================
+        // COVERAGE WARNING
+        // =================================================================
+        renderCoverageWarning() {
+            const warningEl = document.getElementById('coverageWarning');
+            if (!this.db.coverageComplete) {
+                warningEl.style.display = 'flex';
+                console.warn('[Dashboard] Coverage incomplete - showing warning');
+            } else {
+                warningEl.style.display = 'none';
+            }
+        }
+
+        renderHeader() {
+            const dateColumns = this.db.schema.dateColumns;
+            const hasMultipleDates = this.db.schema.hasMultipleDates;
+            const metaInfo = document.getElementById('metaInfo');
+            
+            let meta = '';
+            meta += `<span>📊 ${this.db.columns.length} columns</span>`;
+            meta += `<span>📝 ${this.db.rows.length} rows</span>`;
+            meta += `<span>📁 ${this.db.sections.length} sections</span>`;
+            if (dateColumns.length > 0) {
+                meta += `<span>📅 ${dateColumns.join(' / ')}</span>`;
+            }
+            // Show time comparison status
+            if (hasMultipleDates) {
+                meta += `<span style="color: var(--primary);">📈 Time comparison enabled</span>`;
+            }
+            
+            metaInfo.innerHTML = meta;
+        }
+
+        renderKPIs() {
+            const grid = document.getElementById('kpiGrid');
+            grid.innerHTML = '';
+
+            for (const kpi of this.db.kpis) {
+                const isPositive = kpi.changePercent > 0;
+                const isNegative = kpi.changePercent < 0;
+                
+                let cardClass = 'kpi-card';
+                if (isPositive) cardClass += ' positive';
+                else if (isNegative) cardClass += ' negative';
+                else cardClass += ' neutral';
+
+                // =========================================================
+                // TREND DISPLAY (only if time comparison is available)
+                // =========================================================
+                let changeHtml = '';
+                if (kpi.hasTimeComparison && kpi.changePercent !== null) {
+                    const arrow = kpi.trend || (isPositive ? '↑' : (isNegative ? '↓' : '→'));
+                    const changeClass = isPositive ? 'positive' : (isNegative ? 'negative' : '');
+                    changeHtml = `<div class="change ${changeClass}">${arrow} ${Math.abs(kpi.changePercent).toFixed(1)}%</div>`;
+                    
+                    // Add absolute change if available
+                    if (kpi.change !== null) {
+                        const sign = kpi.change >= 0 ? '+' : '';
+                        changeHtml += `<div class="change-abs">${sign}${this.db.formatNumber(kpi.change)}</div>`;
+                    }
+                }
+
+                grid.innerHTML += `
+                    <div class="${cardClass}">
+                        <div class="label">${this.escapeHtml(kpi.label)}</div>
+                        <div class="value">${this.db.formatNumber(kpi.value)}</div>
+                        ${changeHtml}
+                    </div>
+                `;
+            }
+        }
+
+        renderCharts() {
+            const grid = document.getElementById('chartsGrid');
+            grid.innerHTML = '';
+            
+            // Destroy existing charts
+            this.charts.forEach(chart => chart.destroy());
+            this.charts = [];
+
+            const chartConfigs = this.db.generateChartData();
+
+            for (let i = 0; i < chartConfigs.length; i++) {
+                const config = chartConfigs[i];
+                const canvasId = `chart-${i}`;
+                
+                grid.innerHTML += `
+                    <div class="chart-card">
+                        <h3>${this.escapeHtml(config.title)}</h3>
+                        <div class="chart-container">
+                            <canvas id="${canvasId}"></canvas>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Create charts after DOM update
+            setTimeout(() => {
+                for (let i = 0; i < chartConfigs.length; i++) {
+                    const config = chartConfigs[i];
+                    const ctx = document.getElementById(`chart-${i}`);
+                    if (!ctx) continue;
+
+                    const chartOptions = {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                position: config.type === 'doughnut' ? 'right' : 'top',
+                                labels: { padding: 15, usePointStyle: true }
+                            }
+                        }
+                    };
+
+                    if (config.type === 'bar' || config.type === 'line') {
+                        chartOptions.scales = {
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: function(value) {
+                                        return value.toLocaleString('fr-FR');
+                                    }
+                                }
+                            }
+                        };
+                    }
+
+                    const chart = new Chart(ctx, {
+                        type: config.type,
+                        data: config.data,
+                        options: chartOptions
+                    });
+                    this.charts.push(chart);
+                }
+            }, 100);
+        }
+
+        renderSections() {
+            const container = document.getElementById('sectionsContainer');
+            container.innerHTML = '';
+
+            for (const section of this.db.sections) {
+                const sectionHtml = this.renderSection(section);
+                container.innerHTML += sectionHtml;
+            }
+        }
+
+        renderSection(section) {
+            const columns = this.getDisplayColumns();
+            
+            let tableHtml = `
+                <div class="section-card">
+                    <div class="section-header">
+                        <span>${this.escapeHtml(section.name)}</span>
+                        <span class="row-count">${section.rows.length} rows</span>
+                    </div>
+                    <div class="table-wrapper">
+                        <table>
+                            <thead>
+                                <tr>
+            `;
+
+            // Headers
+            for (const col of columns) {
+                const isNumeric = this.db.schema.numericColumns.includes(col);
+                tableHtml += `<th class="${isNumeric ? 'numeric' : ''}">${this.escapeHtml(col)}</th>`;
+            }
+
+            tableHtml += '</tr></thead><tbody>';
+
+            // Rows
+            for (const row of section.rows) {
+                const rowType = (row.type || '').toLowerCase();
+                const label = (row[this.db.schema.labelColumn] || '').toLowerCase();
+                
+                let rowClass = '';
+                if (rowType === 'section') rowClass = 'row-section';
+                else if (rowType === 'total' || label.includes('total')) rowClass = 'row-total';
+
+                tableHtml += `<tr class="${rowClass}">`;
+
+                for (const col of columns) {
+                    const value = row[col];
+                    const isNumeric = this.db.schema.numericColumns.includes(col);
+                    const isPercent = this.db.schema.percentColumns.includes(col);
+                    const isLabel = col === this.db.schema.labelColumn;
+                    const isNote = col === this.db.schema.noteColumn;
+
+                    let cellContent = '';
+                    let cellClass = '';
+
+                    if (isLabel) {
+                        cellClass = 'label-cell';
+                        cellContent = this.escapeHtml(value || '');
+                        
+                        // Add note badge if note column exists
+                        const noteValue = row[this.db.schema.noteColumn];
+                        if (noteValue && !isNote) {
+                            cellContent += `<span class="note-badge">${this.escapeHtml(noteValue)}</span>`;
+                        }
+                    } else if (isNote && col !== this.db.schema.labelColumn) {
+                        cellContent = value ? `<span class="note-badge">${this.escapeHtml(value)}</span>` : '';
+                    } else if (isNumeric) {
+                        cellClass = 'numeric';
+                        const numVal = this.db.parseNumeric(value);
+                        
+                        if (numVal !== null) {
+                            cellContent = this.db.formatNumber(value, isPercent);
+                            if (numVal < 0) cellClass += ' value-negative';
+                            else if (numVal > 0 && isPercent) cellClass += ' value-positive';
+                        } else {
+                            cellContent = value || '-';
+                        }
+                    } else {
+                        cellContent = this.escapeHtml(value || '-');
+                    }
+
+                    tableHtml += `<td class="${cellClass}">${cellContent}</td>`;
+                }
+
+                tableHtml += '</tr>';
+            }
+
+            tableHtml += '</tbody></table></div></div>';
+            return tableHtml;
+        }
+
+        getDisplayColumns() {
+            // Order: Label, Note, Date columns, Variation columns
+            const cols = [];
+            
+            if (this.db.schema.labelColumn) {
+                cols.push(this.db.schema.labelColumn);
+            }
+            
+            // Skip note column if it will be shown as badge in label
+            // if (this.db.schema.noteColumn) {
+            //     cols.push(this.db.schema.noteColumn);
+            // }
+            
+            for (const col of this.db.schema.dateColumns) {
+                if (!cols.includes(col)) cols.push(col);
+            }
+            
+            for (const col of this.db.schema.variationColumns) {
+                if (!cols.includes(col)) cols.push(col);
+            }
+            
+            for (const col of this.db.schema.percentColumns) {
+                if (!cols.includes(col)) cols.push(col);
+            }
+            
+            // Add any remaining columns
+            for (const col of this.db.columns) {
+                if (!cols.includes(col) && col !== this.db.schema.noteColumn) {
+                    cols.push(col);
+                }
+            }
+            
+            return cols;
+        }
+
+        escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    }
+
+    // =============================================================================
+    // GLOBAL FUNCTIONS
+    // =============================================================================
+
+    let currentRenderer = null;
+
+    function loadJSON() {
+        const input = document.getElementById('jsonInput').value.trim();
+        
+        if (!input) {
+            alert('Please paste JSON data first');
+            return;
+        }
+
+        try {
+            const data = JSON.parse(input);
+            
+            if (!data.columns || !data.rows) {
+                throw new Error('JSON must have "columns" and "rows" arrays');
+            }
+
+            const dashboard = new FinancialDashboard(data);
+            currentRenderer = new DashboardRenderer(dashboard);
+            currentRenderer.render();
+
+        } catch (e) {
+            alert('Invalid JSON: ' + e.message);
+            console.error(e);
+        }
+    }
+
+    function loadExample() {
+        const exampleData = {
+            "columns": ["Label", "Note", "31/12/2024", "31/12/2023", "Variation Montant", "Variation %"],
+            "rows": [
+                {"type": "section", "Label": "ACTIF", "Note": "", "31/12/2024": "", "31/12/2023": "", "Variation Montant": "", "Variation %": ""},
+                {"type": "data", "Label": "Caisse et avoirs auprès de la BCT", "Note": "(1-1)", "31/12/2024": "1 730 727", "31/12/2023": "1 542 910", "Variation Montant": "187 817", "Variation %": "12,2%"},
+                {"type": "data", "Label": "Créances sur les établissements bancaires", "Note": "(1-2)", "31/12/2024": "896 450", "31/12/2023": "1 213 655", "Variation Montant": "(317 205)", "Variation %": "(26,1%)"},
+                {"type": "data", "Label": "Créances sur la clientèle", "Note": "(1-3)", "31/12/2024": "12 456 789", "31/12/2023": "11 234 567", "Variation Montant": "1 222 222", "Variation %": "10,9%"},
+                {"type": "data", "Label": "Portefeuille-titres commercial", "Note": "(1-4)", "31/12/2024": "2 345 678", "31/12/2023": "2 123 456", "Variation Montant": "222 222", "Variation %": "10,5%"},
+                {"type": "data", "Label": "Portefeuille d'investissement", "Note": "(1-5)", "31/12/2024": "3 456 789", "31/12/2023": "3 234 567", "Variation Montant": "222 222", "Variation %": "6,9%"},
+                {"type": "data", "Label": "Valeurs immobilisées", "Note": "(1-7)", "31/12/2024": "567 890", "31/12/2023": "543 210", "Variation Montant": "24 680", "Variation %": "4,5%"},
+                {"type": "data", "Label": "Autres actifs", "Note": "(1-8)", "31/12/2024": "234 567", "31/12/2023": "212 345", "Variation Montant": "22 222", "Variation %": "10,5%"},
+                {"type": "total", "Label": "TOTAL ACTIF", "Note": "", "31/12/2024": "21 688 890", "31/12/2023": "20 104 710", "Variation Montant": "1 584 180", "Variation %": "7,9%"},
+                {"type": "section", "Label": "PASSIF", "Note": "", "31/12/2024": "", "31/12/2023": "", "Variation Montant": "", "Variation %": ""},
+                {"type": "data", "Label": "Dépôts des établissements bancaires", "Note": "(2-1)", "31/12/2024": "1 234 567", "31/12/2023": "1 123 456", "Variation Montant": "111 111", "Variation %": "9,9%"},
+                {"type": "data", "Label": "Dépôts de la clientèle", "Note": "(2-2)", "31/12/2024": "15 678 901", "31/12/2023": "14 567 890", "Variation Montant": "1 111 011", "Variation %": "7,6%"},
+                {"type": "data", "Label": "Emprunts et ressources spéciales", "Note": "(2-3)", "31/12/2024": "2 345 678", "31/12/2023": "2 234 567", "Variation Montant": "111 111", "Variation %": "5,0%"},
+                {"type": "data", "Label": "Autres passifs", "Note": "(2-4)", "31/12/2024": "567 890", "31/12/2023": "543 210", "Variation Montant": "24 680", "Variation %": "4,5%"},
+                {"type": "total", "Label": "TOTAL PASSIF", "Note": "", "31/12/2024": "19 827 036", "31/12/2023": "18 469 123", "Variation Montant": "1 357 913", "Variation %": "7,4%"},
+                {"type": "section", "Label": "CAPITAUX PROPRES", "Note": "", "31/12/2024": "", "31/12/2023": "", "Variation Montant": "", "Variation %": ""},
+                {"type": "data", "Label": "Capital", "Note": "(3)", "31/12/2024": "500 000", "31/12/2023": "500 000", "Variation Montant": "0", "Variation %": "0,0%"},
+                {"type": "data", "Label": "Réserves", "Note": "", "31/12/2024": "890 123", "31/12/2023": "789 012", "Variation Montant": "101 111", "Variation %": "12,8%"},
+                {"type": "data", "Label": "Résultat reporté", "Note": "", "31/12/2024": "234 567", "31/12/2023": "212 345", "Variation Montant": "22 222", "Variation %": "10,5%"},
+                {"type": "data", "Label": "Résultat de l'exercice", "Note": "", "31/12/2024": "237 164", "31/12/2023": "134 230", "Variation Montant": "102 934", "Variation %": "76,7%"},
+                {"type": "total", "Label": "TOTAL CAPITAUX PROPRES", "Note": "", "31/12/2024": "1 861 854", "31/12/2023": "1 635 587", "Variation Montant": "226 267", "Variation %": "13,8%"}
+            ]
+        };
+
+        document.getElementById('jsonInput').value = JSON.stringify(exampleData, null, 2);
+        loadJSON();
+    }
+
+    // Auto-load if URL has data parameter
+    window.onload = function() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const autoLoad = urlParams.get('autoload');
+        if (autoLoad === 'example') {
+            loadExample();
+        }
+    };
+    </script>
+</body>
+</html>
