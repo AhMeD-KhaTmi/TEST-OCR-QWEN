@@ -154,24 +154,16 @@ def recover_labels_from_context(
             recovered_label = mapping[note_value]
             print(f"[LABEL RECOVERY] Row {idx}: Recovered '{recovered_label}' from note mapping")
         
-        # Strategy 2: Infer from section context
-        if not recovered_label:
-            section_name = _find_parent_section(rows, idx)
-            if section_name:
-                if "ACTIF" in section_name.upper():
-                    recovered_label = f"[ACTIF item {note_value or idx}]"
-                elif "PASSIF" in section_name.upper():
-                    recovered_label = f"[PASSIF item {note_value or idx}]"
-                elif "CAPITAUX" in section_name.upper():
-                    recovered_label = f"[CAPITAUX item {note_value or idx}]"
+        # HARDENING #4: LABEL INTEGRITY
+        # NEVER generate artificial labels like [Item], [ACTIF item], etc.
+        # If label cannot be recovered from real data, keep it EMPTY
         
-        # Apply recovery (only if we found something meaningful)
-        # NOTE: We DON'T use bracketed placeholders - this is just for logging
-        if recovered_label and not recovered_label.startswith("["):
+        # Apply recovery ONLY if we found something meaningful from data
+        if recovered_label:
             rows[idx][label_col] = recovered_label
             recovered_count += 1
         else:
-            # Keep empty - don't fabricate
+            # Keep empty - DO NOT create placeholders
             print(f"[LABEL RECOVERY] Row {idx}: Could not recover label, keeping empty")
     
     print(f"[LABEL RECOVERY] Recovered {recovered_count}/{len(affected_rows)} labels")

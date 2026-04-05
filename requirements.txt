@@ -23,3 +23,6 @@ flask-cors
 
 # PDF processing
 PyMuPDF
+
+# Financial table detection (fuzzy title matching)
+rapidfuzz>=3.5.0

@@ -150,9 +150,60 @@ function FileUpload({ onFileSelect, selectedFile, filePreview, fileType }) {
 // =============================================================================
 // PDF PAGE SELECTOR COMPONENT
 // =============================================================================
-function PdfPageSelector({ thumbnails, selectedPages, onPageToggle, onSelectAll, onDeselectAll }) {
+function PdfPageSelector({ thumbnails, selectedPages, onPageToggle, onSelectAll, onDeselectAll, recommendedPages, onSelectRecommended }) {
+  // Helper to get page type badge
+  const getPageBadge = (pageNum) => {
+    if (!recommendedPages) return null
+    
+    const badges = []
+    if (recommendedPages.balance_sheet?.includes(pageNum)) {
+      badges.push({ label: 'BILAN', color: 'bg-green-500' })
+    }
+    if (recommendedPages.income_statement?.includes(pageNum)) {
+      badges.push({ label: 'RÉSULTAT', color: 'bg-purple-500' })
+    }
+    if (recommendedPages.cashflow?.includes(pageNum)) {
+      badges.push({ label: 'FLUX', color: 'bg-orange-500' })
+    }
+    return badges
+  }
+
+  const hasRecommendations = recommendedPages?.all_recommended?.length > 0
+
   return (
     <div className="space-y-4">
+      {/* Recommendations Banner */}
+      {hasRecommendations && (
+        <div className="bg-gradient-to-r from-green-50 to-blue-50 border border-green-200 rounded-lg p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <div>
+                <p className="font-semibold text-green-800">
+                  📊 Smart Detection: {recommendedPages.all_recommended.length} financial table(s) found
+                </p>
+                <p className="text-sm text-green-600">
+                  {recommendedPages.balance_sheet?.length > 0 && `Bilan: p.${recommendedPages.balance_sheet.join(',')} `}
+                  {recommendedPages.income_statement?.length > 0 && `Résultat: p.${recommendedPages.income_statement.join(',')} `}
+                  {recommendedPages.cashflow?.length > 0 && `Flux: p.${recommendedPages.cashflow.join(',')}`}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={onSelectRecommended}
+              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium text-sm flex items-center gap-2"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+              Select Recommended
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <h3 className="font-semibold text-gray-800">
           Select Pages to Extract ({selectedPages.length} selected)
@@ -174,37 +225,64 @@ function PdfPageSelector({ thumbnails, selectedPages, onPageToggle, onSelectAll,
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 max-h-96 overflow-y-auto p-2">
-        {thumbnails.map((thumb) => (
-          <div
-            key={thumb.page}
-            onClick={() => onPageToggle(thumb.page)}
-            className={`
-              relative cursor-pointer rounded-lg overflow-hidden border-2 transition-all
-              ${selectedPages.includes(thumb.page)
-                ? 'border-blue-500 ring-2 ring-blue-200'
-                : 'border-gray-200 hover:border-gray-400'
-              }
-            `}
-          >
-            <img
-              src={thumb.thumbnail}
-              alt={`Page ${thumb.page}`}
-              className="w-full h-auto"
-            />
-            <div className={`
-              absolute top-2 right-2 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold
-              ${selectedPages.includes(thumb.page)
-                ? 'bg-blue-500 text-white'
-                : 'bg-white text-gray-600 border'
-              }
-            `}>
-              {selectedPages.includes(thumb.page) ? '✓' : thumb.page}
+        {thumbnails.map((thumb) => {
+          const badges = getPageBadge(thumb.page)
+          const isRecommended = recommendedPages?.all_recommended?.includes(thumb.page)
+          
+          return (
+            <div
+              key={thumb.page}
+              onClick={() => onPageToggle(thumb.page)}
+              className={`
+                relative cursor-pointer rounded-lg overflow-hidden border-2 transition-all
+                ${selectedPages.includes(thumb.page)
+                  ? 'border-blue-500 ring-2 ring-blue-200'
+                  : isRecommended
+                    ? 'border-green-400 ring-2 ring-green-100'
+                    : 'border-gray-200 hover:border-gray-400'
+                }
+              `}
+            >
+              {/* Recommendation star badge */}
+              {isRecommended && !selectedPages.includes(thumb.page) && (
+                <div className="absolute top-2 left-2 z-10">
+                  <span className="text-yellow-500 text-lg" title="Recommended">⭐</span>
+                </div>
+              )}
+              
+              <img
+                src={thumb.thumbnail}
+                alt={`Page ${thumb.page}`}
+                className="w-full h-auto"
+              />
+              
+              {/* Selection indicator */}
+              <div className={`
+                absolute top-2 right-2 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold
+                ${selectedPages.includes(thumb.page)
+                  ? 'bg-blue-500 text-white'
+                  : 'bg-white text-gray-600 border'
+                }
+              `}>
+                {selectedPages.includes(thumb.page) ? '✓' : thumb.page}
+              </div>
+              
+              {/* Page number and type badges */}
+              <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-60 text-white text-center py-1">
+                <div className="text-xs">Page {thumb.page}</div>
+                {badges && badges.length > 0 && (
+                  <div className="flex justify-center gap-1 mt-0.5">
+                    {badges.map((badge, idx) => (
+                      <span key={idx} className={`${badge.color} px-1.5 py-0.5 rounded text-[10px] font-bold`}>
+                        {badge.label}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white text-center text-xs py-1">
-              Page {thumb.page}
-            </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
     </div>
   )
@@ -410,6 +488,7 @@ function App() {
   const [pdfThumbnails, setPdfThumbnails] = useState([])
   const [selectedPages, setSelectedPages] = useState([])
   const [pdfLoading, setPdfLoading] = useState(false)
+  const [recommendedPages, setRecommendedPages] = useState(null) // NEW: Smart page recommendations
 
   // Processing state
   const [loading, setLoading] = useState(false)
@@ -433,13 +512,14 @@ function App() {
     setError(null)
     setPdfThumbnails([])
     setSelectedPages([])
+    setRecommendedPages(null) // Reset recommendations
 
     if (file.type === 'application/pdf') {
       setFileType('pdf')
       setFilePreview(null)
       setPdfLoading(true)
 
-      // Get PDF info from backend
+      // Get PDF info from backend (includes smart page recommendations)
       try {
         const formData = new FormData()
         formData.append('pdf', file)
@@ -451,8 +531,20 @@ function App() {
 
         if (response.data.success) {
           setPdfThumbnails(response.data.thumbnails)
-          // Auto-select first page
-          setSelectedPages([1])
+          
+          // Store recommendations if available
+          if (response.data.recommended_pages) {
+            setRecommendedPages(response.data.recommended_pages)
+            
+            // Auto-select recommended pages if available, otherwise select first page
+            if (response.data.recommended_pages.all_recommended?.length > 0) {
+              setSelectedPages(response.data.recommended_pages.all_recommended)
+            } else {
+              setSelectedPages([1])
+            }
+          } else {
+            setSelectedPages([1])
+          }
         } else {
           setError(response.data.error || 'Failed to load PDF')
         }
@@ -474,6 +566,13 @@ function App() {
         ? prev.filter(p => p !== pageNum)
         : [...prev, pageNum].sort((a, b) => a - b)
     )
+  }
+
+  // Select recommended pages
+  const handleSelectRecommended = () => {
+    if (recommendedPages?.all_recommended?.length > 0) {
+      setSelectedPages(recommendedPages.all_recommended)
+    }
   }
 
   // Select all pages
@@ -686,6 +785,8 @@ function App() {
                     onPageToggle={handlePageToggle}
                     onSelectAll={handleSelectAll}
                     onDeselectAll={handleDeselectAll}
+                    recommendedPages={recommendedPages}
+                    onSelectRecommended={handleSelectRecommended}
                   />
                 </div>
               )}

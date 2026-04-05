@@ -23,6 +23,7 @@ import json
 import re
 import csv
 import ast
+import copy
 from typing import Dict, List, Optional, Tuple, Any
 from difflib import SequenceMatcher
 
@@ -642,7 +643,10 @@ def extract_json_robust(response: str) -> Optional[Dict]:
     if first_brace == -1:
         return None
     
-    # TRUNCATION FIX: If JSON is truncated (no closing brace), try to recover
+    # =========================================================================
+    # HARDENING #1: SAFE JSON RECOVERY - detect truncation inside strings
+    # If truncated mid-string, discard incomplete row rather than fabricate
+    # =========================================================================
     if last_brace == -1 or last_brace < first_brace:
         # Attempt to close the JSON and parse what we have
         json_str = response[first_brace:]
@@ -652,8 +656,10 @@ def extract_json_robust(response: str) -> Optional[Dict]:
         escape_next = False
         open_braces = 0
         open_brackets = 0
+        truncated_in_string = False
+        last_string_start = -1
         
-        for ch in json_str:
+        for i, ch in enumerate(json_str):
             if escape_next:
                 escape_next = False
                 continue
@@ -661,6 +667,8 @@ def extract_json_robust(response: str) -> Optional[Dict]:
                 escape_next = True
                 continue
             if ch == '"' and not escape_next:
+                if not in_string:
+                    last_string_start = i
                 in_string = not in_string
                 continue
             if in_string:
@@ -674,14 +682,57 @@ def extract_json_robust(response: str) -> Optional[Dict]:
             elif ch == ']':
                 open_brackets -= 1
         
-        # Check if we're inside an unclosed string (value got cut off)
+        # HARDENING: Detect truncation inside string (incomplete row)
         if in_string:
-            json_str = json_str + '"'
+            truncated_in_string = True
+            print("[SAFE JSON RECOVERY] Truncation detected inside string value")
+            
+            # Find the last complete row boundary (before truncated string)
+            # Look backwards for the last complete row object "},"
+            truncation_point = last_string_start
+            search_region = json_str[:truncation_point]
+            
+            # Find last complete row ending
+            last_row_end = search_region.rfind('},')
+            if last_row_end == -1:
+                last_row_end = search_region.rfind('}')
+            
+            if last_row_end > 0:
+                # Discard incomplete row, keep only complete data
+                json_str = json_str[:last_row_end + 1]
+                print(f"[SAFE JSON RECOVERY] Discarded incomplete row, keeping {last_row_end + 1} chars")
+                # Recount unclosed brackets/braces after truncation
+                in_string = False
+                escape_next = False
+                open_braces = 0
+                open_brackets = 0
+                for ch in json_str:
+                    if escape_next:
+                        escape_next = False
+                        continue
+                    if ch == '\\':
+                        escape_next = True
+                        continue
+                    if ch == '"' and not escape_next:
+                        in_string = not in_string
+                        continue
+                    if in_string:
+                        continue
+                    if ch == '{':
+                        open_braces += 1
+                    elif ch == '}':
+                        open_braces -= 1
+                    elif ch == '[':
+                        open_brackets += 1
+                    elif ch == ']':
+                        open_brackets -= 1
+            else:
+                # Cannot find complete row, close string and continue
+                json_str = json_str + '"'
         
         # Close unclosed braces/brackets in correct order (inner to outer)
-        json_str = json_str + '}' * max(0, open_braces - 1)  # Close inner objects
         json_str = json_str + ']' * max(0, open_brackets)     # Close arrays
-        json_str = json_str + '}' * min(1, max(0, open_braces)) # Close root
+        json_str = json_str + '}' * max(0, open_braces)       # Close objects
     else:
         json_str = response[first_brace:last_brace + 1]
 
@@ -1019,6 +1070,105 @@ def remove_header_pollution(data: Dict) -> Dict:
 
 
 # =============================================================================
+# HARDENING #6: MULTI-TABLE SAFETY
+# =============================================================================
+
+def detect_multiple_headers(data: Dict) -> List[int]:
+    """
+    Detect if multiple table headers exist within the data.
+    
+    Returns list of row indices where headers are detected.
+    Multiple headers indicate merged tables that need splitting.
+    """
+    rows = data.get("rows", [])
+    columns = data.get("columns", [])
+    
+    if not rows or not columns:
+        return []
+    
+    header_indices = []
+    
+    # Patterns that indicate a header row embedded in data
+    date_pattern = re.compile(r'^\d{2}[/.\-]\d{2}[/.\-]\d{4}$')
+    header_keywords = {'label', 'libellé', 'note', 'variation', 'montant', '%'}
+    
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        
+        # Skip first few rows (legitimate header area)
+        if idx < 2:
+            continue
+        
+        header_score = 0
+        values = [str(v).strip().lower() for v in row.values() if v]
+        
+        for val in values:
+            # Check if value looks like a column header
+            if val in header_keywords:
+                header_score += 2
+            if date_pattern.match(val):
+                header_score += 2
+            if val in ('en %', 'en montant', 'variation %', 'variation montant'):
+                header_score += 3
+        
+        # If row looks like a header (score >= 3), mark it
+        if header_score >= 3:
+            header_indices.append(idx)
+            print(f"[MULTI-TABLE SAFETY] Detected header row at index {idx}: {list(row.values())[:4]}")
+    
+    return header_indices
+
+
+def split_merged_tables(data: Dict) -> List[Dict]:
+    """
+    HARDENING #6: MULTI-TABLE SAFETY
+    
+    If multiple headers are detected, split into separate tables.
+    DO NOT merge blindly.
+    
+    Returns:
+        List of separate table dicts. If no split needed, returns [data].
+    """
+    header_indices = detect_multiple_headers(data)
+    
+    if not header_indices:
+        # No multiple headers detected - return single table
+        return [data]
+    
+    rows = data.get("rows", [])
+    columns = data.get("columns", [])
+    
+    print(f"[MULTI-TABLE SAFETY] Splitting into {len(header_indices) + 1} separate tables")
+    
+    # Split points: start, header indices, end
+    split_points = [0] + header_indices + [len(rows)]
+    
+    tables = []
+    for i in range(len(split_points) - 1):
+        start_idx = split_points[i]
+        end_idx = split_points[i + 1]
+        
+        # Skip the header row itself if it's a split point
+        if i > 0 and start_idx in header_indices:
+            start_idx += 1
+        
+        table_rows = rows[start_idx:end_idx]
+        
+        if table_rows:
+            table = {
+                "columns": list(columns),  # Copy columns
+                "rows": copy.deepcopy(table_rows),  # Deep copy rows
+                "_table_index": i,
+                "_split_from_multi_table": True
+            }
+            tables.append(table)
+            print(f"[MULTI-TABLE SAFETY] Table {i}: {len(table_rows)} rows")
+    
+    return tables if tables else [data]
+
+
+# =============================================================================
 # POST-PROCESSING: ADD ROW TYPES
 # =============================================================================
 
@@ -1223,6 +1373,9 @@ def post_process_extraction(data: Dict) -> Dict:
     
     FIX 3: Preserves raw data before any processing.
     FIX 4: Validates coverage before applying corrections.
+    
+    HARDENING #2: RAW DATA IMMUTABILITY
+    _raw_rows is deep copied and NEVER modified after creation.
     """
     if data is None:
         return None
@@ -1232,7 +1385,8 @@ def post_process_extraction(data: Dict) -> Dict:
     preserved_meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
 
     # =========================================================================
-    # FIX 3: RAW DATA PRESERVATION (CRITICAL)
+    # HARDENING #2: RAW DATA IMMUTABILITY (CRITICAL)
+    # _raw_rows is deep copied and NEVER modified after creation
     # Store original data BEFORE any processing
     # =========================================================================
     if "_raw_columns" not in data:
@@ -1240,9 +1394,9 @@ def post_process_extraction(data: Dict) -> Dict:
     if "_raw_rows_count" not in data:
         data["_raw_rows_count"] = len(data.get("rows", []))
     if "_raw_rows" not in data:
-        # Store first 20 rows for debugging (to avoid memory bloat)
+        # Deep copy first 20 rows - IMMUTABLE after this point
         raw_rows = data.get("rows", [])[:20]
-        data["_raw_rows"] = [dict(r) if isinstance(r, dict) else r for r in raw_rows]
+        data["_raw_rows"] = copy.deepcopy(raw_rows)
 
     # --- Stage 1: format conversion ---
     data = convert_to_new_format(data)

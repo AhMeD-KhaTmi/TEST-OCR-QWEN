@@ -30,7 +30,8 @@ def preprocess_for_vlm(
     auto_crop: bool = True,
     normalize_background: bool = True,
     target_bg_grey: int = 250,
-    max_dimension: int = 1920
+    max_dimension: int = 1920,
+    _crop_already_applied: bool = False  # HARDENING #3: Track crop state
 ) -> Image.Image:
     """
     Transform high-contrast financial table images for optimal VLM extraction.
@@ -41,6 +42,10 @@ def preprocess_for_vlm(
     3. Softening bold text to prevent attention saturation
     4. Normalizing background to prevent pure-white glare
     
+    HARDENING #3: SINGLE CROP RULE
+    Only ONE crop operation is allowed. If _crop_already_applied is True,
+    auto_crop is automatically disabled to prevent double-cropping.
+    
     Args:
         image: Input PIL Image or numpy array (BGR or RGB)
         target_contrast: Contrast reduction factor (0.8-0.95 recommended)
@@ -50,6 +55,7 @@ def preprocess_for_vlm(
         normalize_background: Whether to convert pure white to light grey
         target_bg_grey: Target background grey level (240-252 recommended)
         max_dimension: Maximum width/height after processing
+        _crop_already_applied: Internal flag - if True, skip cropping
         
     Returns:
         Preprocessed PIL Image ready for VLM inference
@@ -71,6 +77,14 @@ def preprocess_for_vlm(
     elif not was_pil:
         # Assume BGR from OpenCV
         img_array = cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB)
+    
+    # =========================================================================
+    # HARDENING #3: SINGLE CROP RULE
+    # Only ONE crop operation is allowed per image
+    # =========================================================================
+    if _crop_already_applied:
+        auto_crop = False
+        print("[SINGLE CROP RULE] Secondary cropping disabled - already applied")
     
     # =========================================================================
     # STEP 1: AUTO-CROP TO TABLE CONTENT (Critical for token allocation)
@@ -289,7 +303,8 @@ def preprocess_aggressive(
 
 def preprocess_emphasize_labels(
     image: Union[Image.Image, np.ndarray],
-    label_column_ratio: float = 0.35
+    label_column_ratio: float = 0.35,
+    _crop_already_applied: bool = False  # HARDENING #3: Track crop state
 ) -> Image.Image:
     """
     Preprocess with special emphasis on the leftmost (label) column.
@@ -298,17 +313,24 @@ def preprocess_emphasize_labels(
     1. Applies lighter preprocessing to the label column (preserve detail)
     2. Applies heavier preprocessing to numeric columns (reduce visual weight)
     
+    HARDENING #3: SINGLE CROP RULE
+    Only ONE crop operation is allowed per image.
+    
     Args:
         image: Input image
         label_column_ratio: Assumed width of label column (0.35 = 35% of width)
+        _crop_already_applied: If True, skip auto-crop
     """
     if isinstance(image, Image.Image):
         img_array = np.array(image)
     else:
         img_array = image.copy()
     
-    # First apply auto-crop
-    img_array = _auto_crop_to_content(img_array, padding=20)
+    # HARDENING #3: Only crop if not already applied
+    if not _crop_already_applied:
+        img_array = _auto_crop_to_content(img_array, padding=20)
+    else:
+        print("[SINGLE CROP RULE] Secondary cropping disabled in preprocess_emphasize_labels")
     
     h, w = img_array.shape[:2]
     split_x = int(w * label_column_ratio)

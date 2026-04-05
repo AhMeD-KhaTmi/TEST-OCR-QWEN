@@ -340,11 +340,21 @@ def validate_variation_amount(
     FIX 1: Uses properly detected date order (current_col, previous_col)
            instead of assuming schema.date_cols[0] is current.
     
+    CRITICAL SAFETY: This function ONLY modifies schema.variation_amount_col.
+    It READS from date columns but NEVER WRITES to them.
+    
     Formula: expected_variation = current_date_value - previous_date_value
     
     If mismatch exceeds tolerance, overwrites variation_amount.
     """
     if not schema.variation_amount_col:
+        return row
+    
+    # SAFETY: Verify the target column is NOT an immutable source column
+    if _is_immutable_column(schema.variation_amount_col):
+        result.warnings.append(
+            f"[SAFETY] Refusing to modify '{schema.variation_amount_col}' - detected as immutable source column"
+        )
         return row
     
     # FIX 1: Use provided date order, or detect it
@@ -354,6 +364,7 @@ def validate_variation_amount(
     if not current_col or not previous_col:
         return row
     
+    # READ from date columns (immutable source data)
     current_val = _parse_numeric_value(row.get(current_col, ""))
     previous_val = _parse_numeric_value(row.get(previous_col, ""))
     variation_val = _parse_numeric_value(row.get(schema.variation_amount_col, ""))
@@ -365,6 +376,7 @@ def validate_variation_amount(
     expected_variation = current_val - previous_val
     
     # If variation is missing or incorrect, compute it
+    # WRITE ONLY to variation_amount_col (derived metric)
     if variation_val is None:
         row[schema.variation_amount_col] = _format_number(expected_variation)
         result.corrections.append({
@@ -375,7 +387,8 @@ def validate_variation_amount(
             "new_value": row[schema.variation_amount_col],
             "formula": f"{current_val} - {previous_val} = {expected_variation}",
             "current_col": current_col,
-            "previous_col": previous_col
+            "previous_col": previous_col,
+            "column_type": "derived_metric"
         })
         result.corrections_made += 1
         return row
@@ -395,7 +408,8 @@ def validate_variation_amount(
             "found": variation_val,
             "difference": difference,
             "current_col": current_col,
-            "previous_col": previous_col
+            "previous_col": previous_col,
+            "column_type": "derived_metric"
         })
         result.corrections_made += 1
     
@@ -419,11 +433,21 @@ def validate_variation_percent(
     FIX 1: Uses properly detected date order (previous_col)
            instead of assuming schema.date_cols[1] is previous.
     
+    CRITICAL SAFETY: This function ONLY modifies schema.variation_percent_col.
+    It READS from date/variation columns but NEVER WRITES to them.
+    
     Formula: expected_percent = (variation_amount / previous_value) * 100
     
     Handles division by zero (previous == 0 → percent = null).
     """
     if not schema.variation_percent_col:
+        return row
+    
+    # SAFETY: Verify the target column is NOT an immutable source column
+    if _is_immutable_column(schema.variation_percent_col):
+        result.warnings.append(
+            f"[SAFETY] Refusing to modify '{schema.variation_percent_col}' - detected as immutable source column"
+        )
         return row
     
     # FIX 1: Use provided date order, or detect it
@@ -433,6 +457,7 @@ def validate_variation_percent(
     if not previous_col:
         return row
     
+    # READ from date columns (immutable source data)
     previous_val = _parse_numeric_value(row.get(previous_col, ""))
     variation_val = _parse_numeric_value(row.get(schema.variation_amount_col, "")) if schema.variation_amount_col else None
     current_percent = _parse_percent_value(row.get(schema.variation_percent_col, ""))
@@ -448,7 +473,8 @@ def validate_variation_percent(
                 "field": schema.variation_percent_col,
                 "old_value": old_val,
                 "new_value": "",
-                "reason": "previous_value is 0 or missing, division by zero"
+                "reason": "previous_value is 0 or missing, division by zero",
+                "column_type": "derived_metric"
             })
             result.corrections_made += 1
         return row
@@ -460,6 +486,7 @@ def validate_variation_percent(
     expected_percent = (variation_val / previous_val) * 100
     
     # If percent is missing, compute it
+    # WRITE ONLY to variation_percent_col (derived metric)
     if current_percent is None:
         row[schema.variation_percent_col] = _format_percent(expected_percent)
         result.corrections.append({
@@ -468,7 +495,8 @@ def validate_variation_percent(
             "field": schema.variation_percent_col,
             "old_value": row.get(schema.variation_percent_col, ""),
             "new_value": row[schema.variation_percent_col],
-            "formula": f"({variation_val} / {previous_val}) * 100 = {expected_percent:.1f}"
+            "formula": f"({variation_val} / {previous_val}) * 100 = {expected_percent:.1f}",
+            "column_type": "derived_metric"
         })
         result.corrections_made += 1
         return row
@@ -486,7 +514,8 @@ def validate_variation_percent(
             "new_value": row[schema.variation_percent_col],
             "expected": f"{expected_percent:.1f}%",
             "found": f"{current_percent:.1f}%",
-            "difference": f"{difference:.2f}%"
+            "difference": f"{difference:.2f}%",
+            "column_type": "derived_metric"
         })
         result.corrections_made += 1
     
@@ -543,8 +572,65 @@ def validate_sign_consistency(
 
 
 # =============================================================================
-# 4. TOTAL VALIDATION (CRITICAL)
+# 4. TOTAL VALIDATION (CRITICAL - SAFE VERSION)
 # =============================================================================
+
+# IMMUTABLE SOURCE COLUMNS: These columns contain raw extracted data
+# and MUST NEVER be modified by any correction logic
+_IMMUTABLE_COLUMN_PATTERNS = [
+    r'^\d{2}[/.\-]\d{2}[/.\-]\d{4}$',  # Date columns: 31/12/2024, 31.12.2024
+    r'^\d{4}$',                          # Year columns: 2024, 2023
+]
+
+
+def _is_immutable_column(col_name: str) -> bool:
+    """
+    Check if a column contains source data that must NEVER be modified.
+    
+    IMMUTABLE columns:
+    - Date columns (31/12/2024, 31.12.2024, etc.)
+    - Year columns (2024, 2023)
+    
+    These are BASE financial values extracted from the document.
+    Only DERIVED columns (variation, percentage) can be corrected.
+    """
+    if not col_name:
+        return False
+    
+    col_clean = str(col_name).strip()
+    
+    for pattern in _IMMUTABLE_COLUMN_PATTERNS:
+        if re.match(pattern, col_clean):
+            return True
+    
+    return False
+
+
+def _get_mutable_numeric_columns(schema: 'ColumnSchema') -> List[str]:
+    """
+    Return ONLY columns that are safe to modify during corrections.
+    
+    SAFE TO MODIFY (derived metrics):
+    - Variation amount columns
+    - Variation percent columns
+    
+    NEVER MODIFY (source data):
+    - Date columns (31/12/2024, etc.)
+    
+    This prevents cascading corruption where fixing a variation
+    accidentally overwrites base financial values.
+    """
+    mutable_cols = []
+    
+    # Only variation columns are safe to modify
+    if schema.variation_amount_col:
+        mutable_cols.append(schema.variation_amount_col)
+    
+    # NOTE: We explicitly DO NOT include date_cols here
+    # Date columns contain source data and must remain immutable
+    
+    return mutable_cols
+
 
 def validate_totals(
     rows: List[Dict],
@@ -554,17 +640,25 @@ def validate_totals(
     """
     Validate TOTAL rows by summing all data rows in the same section.
     
+    CRITICAL SAFETY RULE:
+    - ONLY validate/correct variation columns
+    - NEVER modify date columns (source data)
+    
     For each TOTAL row:
     - Sum all preceding data rows (until previous section/total)
     - Compare with total value
-    - If mismatch, either recompute or flag error
+    - If mismatch in VARIATION columns only, correct them
+    - For date columns: LOG WARNING but DO NOT MODIFY
     """
     if not schema.date_cols:
         return rows
     
-    numeric_cols = list(schema.date_cols)
-    if schema.variation_amount_col:
-        numeric_cols.append(schema.variation_amount_col)
+    # CRITICAL FIX: Only include columns that are SAFE to modify
+    # Date columns are IMMUTABLE source data
+    mutable_cols = _get_mutable_numeric_columns(schema)
+    
+    # Date columns for VALIDATION ONLY (no modifications)
+    immutable_cols = [col for col in schema.date_cols if _is_immutable_column(col)]
     
     # Track sections: each section ends with a TOTAL row
     i = 0
@@ -582,8 +676,37 @@ def validate_totals(
             if section_start < 0:
                 section_start = 0
             
-            # Sum all data rows in this section
-            for col in numeric_cols:
+            # =================================================================
+            # VALIDATE IMMUTABLE COLUMNS (LOG ONLY, NO MODIFICATION)
+            # =================================================================
+            for col in immutable_cols:
+                expected_sum = 0.0
+                has_values = False
+                
+                for j in range(section_start, i):
+                    if _is_data_row(rows[j]):
+                        val = _parse_numeric_value(rows[j].get(col, ""))
+                        if val is not None:
+                            expected_sum += val
+                            has_values = True
+                
+                if not has_values:
+                    continue
+                
+                actual_total = _parse_numeric_value(row.get(col, ""))
+                
+                if actual_total is not None and abs(expected_sum - actual_total) > VARIATION_TOLERANCE:
+                    # LOG WARNING but DO NOT MODIFY
+                    result.warnings.append(
+                        f"[IMMUTABLE] Total mismatch in '{row.get('Label', '')}', "
+                        f"column '{col}' (source data): expected {expected_sum}, found {actual_total}. "
+                        f"NOT CORRECTED - source data is immutable."
+                    )
+            
+            # =================================================================
+            # CORRECT MUTABLE COLUMNS (VARIATION ONLY)
+            # =================================================================
+            for col in mutable_cols:
                 expected_sum = 0.0
                 has_values = False
                 
@@ -610,11 +733,12 @@ def validate_totals(
                         "old_value": row.get(col, ""),
                         "new_value": row[col],
                         "computed_sum": expected_sum,
-                        "rows_summed": f"{section_start} to {i-1}"
+                        "rows_summed": f"{section_start} to {i-1}",
+                        "column_type": "derived_metric"
                     })
                     result.corrections_made += 1
                 elif abs(expected_sum - actual_total) > VARIATION_TOLERANCE:
-                    # Total is incorrect
+                    # Total is incorrect - safe to correct variation columns
                     old_val = row.get(col, "")
                     row[col] = _format_number(expected_sum)
                     result.corrections.append({
@@ -625,13 +749,10 @@ def validate_totals(
                         "new_value": row[col],
                         "expected_sum": expected_sum,
                         "actual_total": actual_total,
-                        "difference": abs(expected_sum - actual_total)
+                        "difference": abs(expected_sum - actual_total),
+                        "column_type": "derived_metric"
                     })
                     result.corrections_made += 1
-                    result.warnings.append(
-                        f"Total mismatch in '{row.get('Label', '')}', column '{col}': "
-                        f"expected {expected_sum}, found {actual_total}"
-                    )
         
         i += 1
     
@@ -835,6 +956,113 @@ def final_sanity_check(
                             "new_value": row[schema.variation_percent_col]
                         })
                         result.corrections_made += 1
+    
+    return rows
+
+
+# =============================================================================
+# HARDENING #7: VALIDATION LAYER FOR NUMBERS
+# =============================================================================
+
+# Pattern for malformed numbers (detect common OCR/extraction errors)
+_MALFORMED_NUMBER_PATTERNS = [
+    re.compile(r'^\d+[a-zA-Z]+\d*$'),     # Digits mixed with letters: "123abc456"
+    re.compile(r'^[a-zA-Z]+\d+$'),         # Letters then digits: "abc123"
+    re.compile(r'^\d+\s+\d+\s+\d+\s+\d+'), # Too many space-separated groups (>3)
+    re.compile(r'^[\(\[<]\s*$'),           # Unclosed bracket/paren
+    re.compile(r'^\s*[\)\]>]$'),           # Orphan closing bracket
+]
+
+
+def is_malformed_number(val: str) -> bool:
+    """
+    HARDENING #7: Check if a numeric value is malformed.
+    
+    Detects:
+    - Mixed alphanumeric: "123abc"
+    - Unclosed brackets: "(123"
+    - Corrupted formatting: "12 34 56 78 90"
+    - Invalid characters in numeric context
+    
+    Returns True if malformed, False if valid or empty.
+    """
+    if not val:
+        return False
+    
+    val = str(val).strip()
+    if not val:
+        return False
+    
+    # Check against malformed patterns
+    for pattern in _MALFORMED_NUMBER_PATTERNS:
+        if pattern.match(val):
+            return True
+    
+    # Check for unbalanced parentheses/brackets
+    open_count = val.count('(') + val.count('[') + val.count('<')
+    close_count = val.count(')') + val.count(']') + val.count('>')
+    if open_count != close_count:
+        return True
+    
+    # Check for multiple decimal separators
+    dot_count = val.count('.')
+    comma_count = val.count(',')
+    # More than one decimal indicator in non-thousands context is malformed
+    # Exception: European format "1.234.567,89" is valid
+    if dot_count > 1 and comma_count > 1:
+        return True
+    
+    return False
+
+
+def validate_numeric_consistency(
+    rows: List[Dict],
+    schema: ColumnSchema,
+    result: ValidationResult
+) -> List[Dict]:
+    """
+    HARDENING #7: VALIDATION LAYER FOR NUMBERS
+    
+    After parsing, reject malformed numbers and ensure numeric consistency.
+    
+    Rules:
+    - Reject values that fail numeric pattern validation
+    - Clear malformed values rather than fabricating corrections
+    - Log all rejections for audit
+    """
+    numeric_cols = list(schema.date_cols)
+    if schema.variation_amount_col:
+        numeric_cols.append(schema.variation_amount_col)
+    
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        
+        for col in numeric_cols:
+            val = _clean(row.get(col, ""))
+            if not val:
+                continue
+            
+            # Check if value is malformed
+            if is_malformed_number(val):
+                result.warnings.append(
+                    f"Row {i} '{row.get('Label', '')}': Malformed number '{val}' in column '{col}' - cleared"
+                )
+                row[col] = ""  # Clear malformed value
+                print(f"[NUMBER VALIDATION] Rejected malformed value: '{val}' in row {i}, col '{col}'")
+                continue
+            
+            # Additional consistency check: try parsing
+            vtype, normalized = classify_value(val)
+            if vtype == VALUE_TYPE_NUMBER:
+                # Verify the normalized value is actually numeric
+                try:
+                    float(normalized)
+                except (ValueError, TypeError):
+                    result.warnings.append(
+                        f"Row {i} '{row.get('Label', '')}': Cannot parse '{val}' as number in column '{col}'"
+                    )
+                    row[col] = ""
     
     return rows
 
@@ -1128,7 +1356,21 @@ def validate_financial_table(data: Dict) -> Tuple[Dict, ValidationResult]:
     # 7. Final sanity check (always check)
     rows = final_sanity_check(rows, schema, result)
     
+    # HARDENING #7: Numeric consistency validation (always check)
+    rows = validate_numeric_consistency(rows, schema, result)
+    
     data["rows"] = rows
+    
+    # =========================================================================
+    # HARDENING #5: CONFIDENCE ENFORCEMENT
+    # Mark result as unreliable if confidence < 0.6
+    # Frontend must disable charts when unreliable=True
+    # =========================================================================
+    CONFIDENCE_THRESHOLD = 0.6
+    is_unreliable = overall_confidence < CONFIDENCE_THRESHOLD
+    
+    if is_unreliable:
+        print(f"[CONFIDENCE ENFORCEMENT] Result marked UNRELIABLE (confidence: {overall_confidence:.2f} < {CONFIDENCE_THRESHOLD})")
     
     # Add comprehensive validation metadata
     data["_validation"] = {
@@ -1140,11 +1382,15 @@ def validate_financial_table(data: Dict) -> Tuple[Dict, ValidationResult]:
         "corrections": result.corrections,
         "errors": result.errors,
         "warnings": result.warnings,
+        # HARDENING #5: Unreliable flag for frontend
+        "unreliable": is_unreliable,
+        "charts_enabled": not is_unreliable,
         # FIX 9: Include confidence scores
         "confidence": {
             "overall": round(overall_confidence, 3),
             "coverage": round(coverage_confidence, 3),
-            "extraction": round(extraction_confidence, 3)
+            "extraction": round(extraction_confidence, 3),
+            "threshold": CONFIDENCE_THRESHOLD
         },
         # FIX 1: Include detected date order
         "date_order": {

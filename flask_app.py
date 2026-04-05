@@ -29,6 +29,7 @@ from run_qwen_vl import (
     extract_table_from_image,
     get_vram_usage,
     DEFAULT_MAX_NEW_TOKENS,
+    extract_table_title_sync,  # TABLE TITLE DETECTION
 )
 from json_table_utils import (
     extract_json_from_response,
@@ -45,6 +46,12 @@ from pdf_handler import (
     merge_page_results,
     generate_pdf_thumbnails,
     estimate_processing_time
+)
+
+# Financial table detector for page recommendations
+from financial_table_detector import (
+    detect_financial_statements,
+    get_financial_pages,
 )
 
 # =============================================================================
@@ -65,7 +72,10 @@ PDF_DPI_LEVELS = [216, 264, 300]  # ~3x to 4.16x scaling (72 DPI base)
 PDF_OCR_MAX_IMAGE_SIZE = 1700
 PDF_MAX_NEW_TOKENS = DEFAULT_MAX_NEW_TOKENS
 PDF_FALLBACK_MAX_NEW_TOKENS = DEFAULT_MAX_NEW_TOKENS
-TABLE_DETECTION_MIN_SCORE = 0.33
+# Table detection threshold - LOWERED for text-based financial tables
+# Financial statements often don't have visible grid lines, so we rely more on
+# numeric density than line detection. User-selected pages should always be processed.
+TABLE_DETECTION_MIN_SCORE = 0.02  # Very low threshold - trust user selection
 
 # Image extraction budgets tuned to avoid row truncation on long tables.
 IMAGE_MAX_NEW_TOKENS = DEFAULT_MAX_NEW_TOKENS
@@ -356,6 +366,72 @@ def pdf_to_images(pdf_bytes, selected_pages):
     }
 
 
+def infer_table_type_from_content(parsed_json):
+    """
+    SAFETY FALLBACK: Infer table type from row content when title detection fails.
+    
+    Rules:
+    - If rows contain "RESULTAT", "PRODUIT", "CHARGES" → income_statement
+    - If rows contain "ACTIF", "PASSIF" → balance_sheet
+    - If rows contain "ENGAGEMENT", "HORS BILAN" → off_balance
+    
+    Args:
+        parsed_json: Extracted table JSON with rows
+        
+    Returns:
+        Inferred table_type string or None
+    """
+    if not parsed_json or not isinstance(parsed_json, dict):
+        return None
+    
+    rows = parsed_json.get('rows', [])
+    if not rows:
+        return None
+    
+    # Collect all text from labels (first column typically)
+    all_text = []
+    for row in rows:
+        if isinstance(row, dict):
+            # Check "label" field
+            label = row.get('label', '')
+            if label:
+                all_text.append(str(label).upper())
+            # Also check first value in row
+            for key, val in row.items():
+                if isinstance(val, str):
+                    all_text.append(val.upper())
+                    break
+        elif isinstance(row, list) and row:
+            all_text.append(str(row[0]).upper())
+    
+    combined_text = ' '.join(all_text)
+    
+    # Income statement indicators
+    income_keywords = ['RESULTAT', 'PRODUIT', 'CHARGES', 'EXPLOITATION', 'BENEFICE', 'PERTE']
+    income_score = sum(1 for kw in income_keywords if kw in combined_text)
+    
+    # Balance sheet indicators
+    balance_keywords = ['ACTIF', 'PASSIF', 'CAPITAUX', 'IMMOBILISATIONS', 'CREANCES', 'DETTES']
+    balance_score = sum(1 for kw in balance_keywords if kw in combined_text)
+    
+    # Off-balance indicators
+    off_balance_keywords = ['ENGAGEMENT', 'HORS BILAN', 'GARANTIE', 'CAUTION']
+    off_balance_score = sum(1 for kw in off_balance_keywords if kw in combined_text)
+    
+    # Return highest score type (minimum 2 matches required)
+    scores = {
+        'income_statement': income_score,
+        'balance_sheet': balance_score,
+        'off_balance': off_balance_score,
+    }
+    
+    best_type = max(scores, key=scores.get)
+    if scores[best_type] >= 2:
+        return best_type
+    
+    return None
+
+
 def process_pages(pdf_bytes, selected_pages):
     """Process selected PDF pages sequentially through OCR with robust fallbacks."""
     conversion = pdf_to_images(pdf_bytes, selected_pages)
@@ -368,21 +444,36 @@ def process_pages(pdf_bytes, selected_pages):
 
         print(f"[PDF] Processing page {page_num} ({idx + 1}/{len(page_artifacts)})...", flush=True)
 
+        # NOTE: We no longer skip pages based on table detection score.
+        # If the user (or smart detector) selected this page, we ALWAYS try to extract.
+        # The table_metrics are logged for debugging but don't block extraction.
         if not artifact['table_detected']:
-            results.append({
-                'page': page_num,
-                'success': False,
-                'skipped': True,
-                'error': f"Skipped: page likely has no table (score={artifact['table_metrics']['table_score']}).",
-                'table_metrics': artifact['table_metrics'],
-                'quality': artifact['quality'],
-                'render_dpi': artifact['dpi'],
-            })
-            continue
+            print(
+                f"[PDF] Page {page_num}: low table score ({artifact['table_metrics']['table_score']:.3f}) "
+                f"- proceeding anyway (user-selected)",
+                flush=True
+            )
 
         try:
             torch.cuda.empty_cache()
-
+            
+            # =================================================================
+            # STEP 1: PER-PAGE TITLE DETECTION (BEFORE table extraction)
+            # Each page gets its own title - NO SHARED TITLES
+            # =================================================================
+            title_info = {"table_name": "UNKNOWN", "table_type": None, "title_detection_success": False}
+            raw_image_path = artifact.get('raw_image_path')
+            if raw_image_path and os.path.exists(raw_image_path):
+                title_info = extract_table_title_sync(model, processor, raw_image_path)
+                print(
+                    f"[PAGE {page_num}] Title detected: {title_info.get('table_name')!r} "
+                    f"(type: {title_info.get('table_type')})",
+                    flush=True,
+                )
+            
+            # =================================================================
+            # STEP 2: TABLE EXTRACTION
+            # =================================================================
             raw_result = extract_table_from_image(
                 model,
                 processor,
@@ -424,6 +515,33 @@ def process_pages(pdf_bytes, selected_pages):
             parsed_json = post_process_extraction(parsed_json)
             is_valid, validation_errors = validate_table_json(parsed_json)
             inference_time = time.time() - page_start_time
+            
+            # =================================================================
+            # STEP 3: INJECT TABLE TITLE INTO PARSED JSON (PER-PAGE)
+            # =================================================================
+            page_table_name = title_info.get('table_name', 'UNKNOWN')
+            page_table_type = title_info.get('table_type')
+            
+            # SAFETY FALLBACK: If title detection failed, infer from content
+            if page_table_name == 'UNKNOWN' or page_table_type is None:
+                inferred_type = infer_table_type_from_content(parsed_json)
+                if inferred_type:
+                    page_table_type = inferred_type
+                    print(
+                        f"[PAGE {page_num}] Content-based fallback: inferred type={inferred_type}",
+                        flush=True,
+                    )
+            
+            if isinstance(parsed_json, dict):
+                parsed_json['table_name'] = page_table_name
+                parsed_json['table_type'] = page_table_type
+            
+            # HARDENING #5: Extract confidence/unreliable flags for frontend
+            validation_info = parsed_json.get('_validation', {}) if isinstance(parsed_json, dict) else {}
+            confidence_info = validation_info.get('confidence', {})
+            overall_confidence = confidence_info.get('overall', 1.0)
+            is_unreliable = validation_info.get('unreliable', False)
+            charts_enabled = validation_info.get('charts_enabled', True)
 
             results.append({
                 'page': page_num,
@@ -437,6 +555,13 @@ def process_pages(pdf_bytes, selected_pages):
                 'table_metrics': artifact['table_metrics'],
                 'quality': artifact['quality'],
                 'render_dpi': artifact['dpi'],
+                # HARDENING #5: Confidence enforcement for frontend
+                'confidence': round(overall_confidence, 3),
+                'unreliable': is_unreliable,
+                'charts_enabled': charts_enabled,
+                # TABLE TITLE DETECTION (PER-PAGE)
+                'table_name': page_table_name,
+                'table_type': page_table_type,
             })
 
         except Exception as e:
@@ -447,6 +572,8 @@ def process_pages(pdf_bytes, selected_pages):
                 'table_metrics': artifact['table_metrics'],
                 'quality': artifact['quality'],
                 'render_dpi': artifact['dpi'],
+                'table_name': 'UNKNOWN',
+                'table_type': None,
             })
 
         finally:
@@ -456,6 +583,7 @@ def process_pages(pdf_bytes, selected_pages):
                 if tmp_path and os.path.exists(tmp_path):
                     os.remove(tmp_path)
 
+    # NO global table_name/table_type - each page has its own in results[]
     return {
         'page_count': conversion['page_count'],
         'results': results,
@@ -520,6 +648,17 @@ def extract():
         )
         file.save(temp_path)
 
+        # =================================================================
+        # STEP 0: TABLE TITLE DETECTION (BEFORE table extraction)
+        # Extract title from top 25% of image header region
+        # =================================================================
+        title_info = extract_table_title_sync(model, processor, temp_path)
+        print(
+            f"[IMAGE][{request_id}] title_detection table_name={title_info.get('table_name')!r} "
+            f"table_type={title_info.get('table_type')} success={title_info.get('title_detection_success')}",
+            flush=True,
+        )
+
         # Extract table data
         start_time = time.time()
         raw_result = extract_table_from_image(
@@ -579,9 +718,23 @@ def extract():
         if parsed_json:
             parsed_json = post_process_extraction(parsed_json)
             is_valid, validation_errors = validate_table_json(parsed_json)
+            
+            # =================================================================
+            # INJECT TABLE TITLE INTO PARSED JSON
+            # =================================================================
+            if isinstance(parsed_json, dict):
+                parsed_json['table_name'] = title_info.get('table_name', 'UNKNOWN')
+                parsed_json['table_type'] = title_info.get('table_type')
 
         # Get VRAM usage after inference
         allocated, reserved = get_vram_usage()
+        
+        # HARDENING #5: Extract confidence/unreliable flags for frontend
+        validation_info = parsed_json.get('_validation', {}) if isinstance(parsed_json, dict) else {}
+        confidence_info = validation_info.get('confidence', {})
+        overall_confidence = confidence_info.get('overall', 1.0)
+        is_unreliable = validation_info.get('unreliable', False)
+        charts_enabled = validation_info.get('charts_enabled', True)
 
         response_data = {
             'success': True,
@@ -591,6 +744,13 @@ def extract():
             'filename': filename,
             'request_id': request_id,
             'uploaded_file_size_bytes': upload_size,
+            # HARDENING #5: Confidence enforcement for frontend
+            'confidence': round(overall_confidence, 3),
+            'unreliable': is_unreliable,
+            'charts_enabled': charts_enabled,
+            # TABLE TITLE DETECTION
+            'table_name': title_info.get('table_name', 'UNKNOWN'),
+            'table_type': title_info.get('table_type'),
         }
 
         # Add parsed JSON if available
@@ -606,6 +766,9 @@ def extract():
             response_data['validation_errors'] = ['Could not extract valid JSON from response']
             response_data['success'] = False
             response_data['error'] = 'Model could not return valid table JSON for this image'
+            # Mark as unreliable when extraction fails
+            response_data['unreliable'] = True
+            response_data['charts_enabled'] = False
 
         extracted_rows = (
             response_data.get('parsed_json', {})
@@ -616,7 +779,8 @@ def extract():
         )
         print(
             f"[IMAGE][{request_id}] completed success={response_data['success']} "
-            f"rows={extracted_rows} inference_time={response_data['inference_time_seconds']}s",
+            f"rows={extracted_rows} inference_time={response_data['inference_time_seconds']}s "
+            f"confidence={overall_confidence:.2f} unreliable={is_unreliable}",
             flush=True,
         )
 
@@ -749,7 +913,14 @@ For each table found:
 
 @app.route('/pdf/info', methods=['POST'])
 def pdf_info():
-    """Get PDF information (page count, thumbnails)"""
+    """
+    Get PDF information (page count, thumbnails) with SMART PAGE RECOMMENDATIONS.
+    
+    Returns recommended pages for extraction based on financial statement detection:
+    - balance_sheet: pages containing balance sheet/BILAN
+    - income_statement: pages containing income statement/RESULTAT
+    - cashflow: pages containing cash flow statement
+    """
 
     if 'pdf' not in request.files:
         return jsonify({'error': 'No PDF file provided'}), 400
@@ -762,6 +933,7 @@ def pdf_info():
     if not file.filename.lower().endswith('.pdf'):
         return jsonify({'error': 'File must be a PDF'}), 400
 
+    temp_path = None
     try:
         # Read PDF into memory
         pdf_bytes = file.read()
@@ -790,12 +962,59 @@ def pdf_info():
             })
 
         doc.close()
+        
+        # =================================================================
+        # SMART PAGE RECOMMENDATIONS
+        # Detect financial tables and recommend pages for extraction
+        # =================================================================
+        recommended_pages = {
+            "balance_sheet": [],
+            "income_statement": [],
+            "cashflow": [],
+            "all_recommended": [],
+        }
+        
+        try:
+            # Save PDF to temp file for detector (needs file path)
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+                temp_path = tmp.name
+                tmp.write(pdf_bytes)
+            
+            # Run financial statement detection
+            detection_result = detect_financial_statements(temp_path, verbose=False)
+            
+            recommended_pages["balance_sheet"] = detection_result.balance_sheet_pages or []
+            recommended_pages["income_statement"] = detection_result.income_statement_pages or []
+            recommended_pages["cashflow"] = detection_result.cashflow_pages or []
+            
+            # Combine all recommended pages (unique, sorted)
+            all_pages = set()
+            all_pages.update(recommended_pages["balance_sheet"])
+            all_pages.update(recommended_pages["income_statement"])
+            all_pages.update(recommended_pages["cashflow"])
+            recommended_pages["all_recommended"] = sorted(all_pages)
+            
+            print(
+                f"[PDF INFO] Page recommendations: "
+                f"balance_sheet={recommended_pages['balance_sheet']} "
+                f"income_statement={recommended_pages['income_statement']} "
+                f"cashflow={recommended_pages['cashflow']}",
+                flush=True
+            )
+            
+        except Exception as detect_error:
+            print(f"[PDF INFO] Page detection failed (non-critical): {detect_error}", flush=True)
+            # Detection failure is non-critical - return empty recommendations
 
         return jsonify({
             'success': True,
             'filename': file.filename,
             'page_count': page_count,
-            'thumbnails': thumbnails
+            'thumbnails': thumbnails,
+            # PAGE RECOMMENDATIONS
+            'recommended_pages': recommended_pages,
+            'has_recommendations': len(recommended_pages["all_recommended"]) > 0,
         })
 
     except Exception as e:
@@ -803,6 +1022,11 @@ def pdf_info():
             'success': False,
             'error': str(e)
         }), 500
+    
+    finally:
+        # Clean up temp file
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 @app.route('/pdf/extract', methods=['POST'])

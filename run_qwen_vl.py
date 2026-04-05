@@ -78,6 +78,405 @@ def print_vram_status(stage=""):
     print(f"[VRAM {stage}] Allocated: {allocated:.2f} GB | Reserved: {reserved:.2f} GB")
 
 # =============================================================================
+# TITLE DETECTION - Extract table name from document header
+# =============================================================================
+
+def extract_header_region(image_path, header_percentage=0.25):
+    """
+    Extract the top portion of the image (header region).
+
+    Args:
+        image_path: Path to the image
+        header_percentage: Percentage of image height to extract (default 25%)
+
+    Returns:
+        PIL Image of the header region, or None if extraction failed
+    """
+    try:
+        img = Image.open(image_path)
+        width, height = img.size
+
+        # Calculate header region (top 25%)
+        header_height = int(height * header_percentage)
+
+        # Crop top region
+        header_img = img.crop((0, 0, width, header_height))
+
+        return header_img
+    except Exception as e:
+        print(f"[Title] Failed to extract header: {e}")
+        return None
+
+
+def classify_table_type(title):
+    """
+    Classify table type based on title keywords.
+
+    Args:
+        title: Extracted table title
+
+    Returns:
+        Table type string or None
+    """
+    title_upper = title.upper()
+
+    if any(keyword in title_upper for keyword in ["BILAN", "BALANCE"]):
+        return "balance_sheet"
+    elif "RESULTAT" in title_upper or "INCOME" in title_upper:
+        return "income_statement"
+    elif "ENGAGEMENT" in title_upper:
+        return "off_balance"
+
+    return None
+
+
+def detect_table_title_from_text(text):
+    """
+    Detect table title from extracted header text.
+
+    Applies priority rules:
+    1. Lines with keywords: BILAN, RESULTAT, ENGAGEMENT, BALANCE, INCOME
+    2. Prefer: uppercase lines, centered lines, lines without numbers
+    3. Ignore: bank names, dates, units
+
+    Args:
+        text: Raw text extracted from header
+
+    Returns:
+        Detected title string or "UNKNOWN"
+    """
+
+    if not text or not text.strip():
+        return "UNKNOWN"
+
+    lines = text.strip().split('\n')
+
+    # Filter and clean lines
+    candidates = []
+
+    keywords = ["BILAN", "RESULTAT", "ENGAGEMENT", "BALANCE", "INCOME"]
+    ignore_keywords = ["ATTIJARI", "BANK", "GROUPE", "EN MILLIERS", "DATE", "2025", "2026", "2027", "2024", "2023", "2022"]
+
+    for line in lines:
+        line = line.strip()
+
+        # Skip empty or too short lines
+        if not line or len(line) < 4:
+            continue
+
+        # Skip lines with ignore keywords
+        if any(keyword in line.upper() for keyword in ignore_keywords):
+            continue
+
+        # Skip lines that are mostly numbers
+        if sum(c.isdigit() for c in line) / max(len(line), 1) > 0.3:
+            continue
+
+        # Score for priority
+        score = 0
+
+        # Priority 1: Contains keywords
+        for keyword in keywords:
+            if keyword in line.upper():
+                score += 100
+                break
+
+        # Priority 2: Uppercase lines (suggests titles)
+        if line.isupper():
+            score += 50
+
+        # Priority 3: No numbers (suggests title over data)
+        if not any(c.isdigit() for c in line):
+            score += 30
+
+        # Penalize lines with special accounting symbols
+        if any(sym in line for sym in ["%", "€", "£", "$", "DT"]):
+            score -= 20
+
+        candidates.append((line, score))
+
+    if not candidates:
+        return "UNKNOWN"
+
+    # Sort by score (descending) and get top candidate
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    best_title = candidates[0][0]
+
+    # Clean the title
+    best_title = clean_table_title(best_title)
+
+    return best_title if best_title else "UNKNOWN"
+
+
+def clean_table_title(title):
+    """
+    Normalize table title by:
+    - Removing extra spaces
+    - Removing parentheses and quotes
+    - Trimming
+
+    Args:
+        title: Raw title string
+
+    Returns:
+        Cleaned title string
+    """
+    if not title:
+        return ""
+
+    # Remove extra spaces
+    title = re.sub(r'\s+', ' ', title).strip()
+
+    # Remove balanced parentheses (but keep content if important)
+    title = re.sub(r'\s*\([^)]*\)\s*', ' ', title)
+
+    # Remove extra quotes
+    title = title.replace('"', '').replace("'", '')
+
+    # Final cleanup
+    title = re.sub(r'\s+', ' ', title).strip()
+
+    return title
+
+
+def extract_table_title_sync(model, processor, image_path):
+    """
+    Extract table title using Qwen-VL on the header region (SYNCHRONOUS version).
+    
+    This is the production entry point - runs BEFORE table extraction.
+
+    Args:
+        model: Loaded Qwen-VL model
+        processor: Qwen-VL processor
+        image_path: Path to the full image
+
+    Returns:
+        Dict with 'table_name' and optional 'table_type'
+    """
+
+    try:
+        # Extract header region (top 25%)
+        header_img = extract_header_region(image_path, header_percentage=0.25)
+
+        if header_img is None:
+            return {
+                "table_name": "UNKNOWN",
+                "table_type": None,
+                "title_detection_success": False,
+                "reason": "Failed to extract header region"
+            }
+
+        # Save header to temporary file
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+            header_path = tmp.name
+            header_img.save(header_path)
+
+        try:
+            # OCR the header using simple prompt
+            header_prompt = """Extract all text from this image. Return ONLY the raw text, no explanation."""
+
+            # Prepare message
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "image": header_path,
+                        },
+                        {
+                            "type": "text",
+                            "text": header_prompt
+                        },
+                    ],
+                }
+            ]
+
+            text = processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+
+            image_inputs, video_inputs = process_vision_info(messages)
+
+            inputs = processor(
+                text=[text],
+                images=image_inputs,
+                videos=video_inputs,
+                padding=True,
+                return_tensors="pt"
+            )
+
+            inputs = inputs.to('cuda')
+
+            # Generate with small token limit (header text only)
+            with torch.inference_mode():
+                generated_ids = model.generate(
+                    **inputs,
+                    max_new_tokens=256,
+                    do_sample=False,
+                )
+
+            # Decode
+            generated_ids_trimmed = [
+                out_ids[len(in_ids):]
+                for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            ]
+
+            header_text = processor.batch_decode(
+                generated_ids_trimmed,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False
+            )[0]
+
+            # Detect title from header text
+            detected_title = detect_table_title_from_text(header_text)
+            table_type = classify_table_type(detected_title)
+
+            print(f"[Title Detection] Detected: '{detected_title}' (type: {table_type})")
+
+            return {
+                "table_name": detected_title,
+                "table_type": table_type,
+                "title_detection_success": True,
+                "header_text_preview": header_text[:100] + "..." if len(header_text) > 100 else header_text
+            }
+
+        finally:
+            # Clean up temp file
+            if os.path.exists(header_path):
+                os.remove(header_path)
+
+    except Exception as e:
+        print(f"[Title Detection] Error: {e}")
+        return {
+            "table_name": "UNKNOWN",
+            "table_type": None,
+            "title_detection_success": False,
+            "reason": str(e)
+        }
+
+
+async def extract_table_title(model, processor, image_path):
+    """
+    Extract table title using Qwen-VL on the header region (ASYNC version - legacy).
+    
+    NOTE: Use extract_table_title_sync for production.
+
+    Args:
+        model: Loaded Qwen-VL model
+        processor: Qwen-VL processor
+        image_path: Path to the full image
+
+    Returns:
+        Dict with 'table_name' and optional 'table_type'
+    """
+
+    try:
+        # Extract header region
+        header_img = extract_header_region(image_path, header_percentage=0.25)
+
+        if header_img is None:
+            return {
+                "table_name": "UNKNOWN",
+                "table_type": None,
+                "title_detection_success": False,
+                "reason": "Failed to extract header region"
+            }
+
+        # Save header to temporary file
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+            header_path = tmp.name
+            header_img.save(header_path)
+
+        # OCR the header using simple prompt
+        header_prompt = """Extract all text from this image. Return ONLY the raw text, no explanation."""
+
+        try:
+            # Prepare message
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "image": header_path,
+                        },
+                        {
+                            "type": "text",
+                            "text": header_prompt
+                        },
+                    ],
+                }
+            ]
+
+            text = processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+
+            image_inputs, video_inputs = process_vision_info(messages)
+
+            inputs = processor(
+                text=[text],
+                images=image_inputs,
+                videos=video_inputs,
+                padding=True,
+                return_tensors="pt"
+            )
+
+            inputs = inputs.to('cuda')
+
+            # Generate
+            with torch.inference_mode():
+                generated_ids = model.generate(
+                    **inputs,
+                    max_new_tokens=256,  # Small for header text only
+                    do_sample=False,
+                )
+
+            # Decode
+            generated_ids_trimmed = [
+                out_ids[len(in_ids):]
+                for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            ]
+
+            header_text = processor.batch_decode(
+                generated_ids_trimmed,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False
+            )[0]
+
+            # Detect title from header text
+            detected_title = detect_table_title_from_text(header_text)
+            table_type = classify_table_type(detected_title)
+
+            return {
+                "table_name": detected_title,
+                "table_type": table_type,
+                "title_detection_success": True,
+                "header_text_preview": header_text[:100] + "..." if len(header_text) > 100 else header_text
+            }
+
+        finally:
+            # Clean up temp file
+            if os.path.exists(header_path):
+                os.remove(header_path)
+
+    except Exception as e:
+        print(f"[Title Detection] Error: {e}")
+        return {
+            "table_name": "UNKNOWN",
+            "table_type": None,
+            "title_detection_success": False,
+            "reason": str(e)
+        }
+
+
+# =============================================================================
 # STEP 3: LOAD MODEL WITH 4-BIT QUANTIZATION
 # =============================================================================
 
