@@ -2,34 +2,33 @@
 Safe Pipeline Improvements - Incremental Fixes for Financial OCR
 ================================================================
 
-This module provides SAFE, INCREMENTAL improvements to the financial OCR pipeline.
+This module provides SAFE, NON-DESTRUCTIVE validation for the financial OCR pipeline.
 
-DESIGN PRINCIPLES:
-    1. ALL changes are additive - no breaking changes
-    2. Functions return metadata - original data untouched unless explicitly enabled
-    3. Conservative thresholds - better to miss corrections than corrupt data
-    4. Full audit trail - all decisions are logged
-    5. CONFIDENCE GATING - corrections controlled by confidence level
-    6. IMMUTABLE RAW DATA - _raw_rows never modified
+DESIGN PRINCIPLES (v3.1 - CRITICAL FIX):
+    1. OCR EXTRACTED VALUES ARE SOURCE OF TRUTH - never overwrite
+    2. VALIDATION ONLY by default - no automatic corrections
+    3. Only compute MISSING values - never replace existing
+    4. Full audit trail - all validations logged as warnings
+    5. IMMUTABLE RAW DATA - _raw_rows NEVER modified
+    6. FAIL-SAFE - return original data on any error
 
 PHASES IMPLEMENTED:
     Phase 1: Enhanced Column Type Detection (semantic understanding)
     Phase 2: Safe Column Validation (detect corruption without modifying)
-    Phase 3: Controlled Realignment (fix ONLY obvious cases)
-    Phase 4: Improved Total Validation (section-aware)
+    Phase 3: Controlled Realignment (detection only, no modification)
+    Phase 4: Total Validation (validation warnings, not corrections)
     Phase 5: Meaningful Confidence Scoring
     Phase 6: Cash Flow Table Detection
     Phase 7: Safety/Reliability Flags
 
-PRODUCTION HARDENING (v3.0):
-    - Confidence gating controls ALL corrections
-    - Full correction traceability
-    - Table-type isolation
-    - Fail-safe behavior
-    - Raw data protection
+CRITICAL FIX (v3.1):
+    - DEFAULT is NON-DESTRUCTIVE (apply_corrections=False)
+    - NEVER overwrites extracted values
+    - Mismatches reported as WARNINGS only
+    - System is now ADVISORY, not corrective
 
 Author: Safe Refactor System
-Version: 3.0 - Production Hardened
+Version: 3.1 - NON-DESTRUCTIVE (Critical Bug Fix)
 """
 
 import re
@@ -1506,18 +1505,25 @@ def recompute_totals(
     rows: List[Dict],
     column_types: ColumnTypeResult,
     sections: List[SectionInfo],
-    apply_corrections: bool = True
+    apply_corrections: bool = False  # CRITICAL FIX: Default to False - NEVER overwrite
 ) -> FinancialRecomputationResult:
     """
-    STEP 4: Financial Recomputation
+    STEP 4: Financial Validation (NON-DESTRUCTIVE)
     
-    Recomputes all totals based on component values.
-    Optionally applies corrections when mismatches are found.
+    CRITICAL FIX (v3.1):
+        - NEVER overwrites extracted values
+        - Only VALIDATES totals and reports mismatches
+        - Only COMPUTES values when field is EMPTY/MISSING
+        - All mismatches are flagged as WARNINGS, not corrections
+    
+    OCR-extracted values are the SOURCE OF TRUTH.
     """
-    import copy
+    # CRITICAL: Work on deep copy to protect original
     corrected_rows = copy.deepcopy(rows)
-    corrections_made = []
-    totals_corrected = 0
+    validations = []  # Changed from corrections_made
+    totals_validated = 0
+    totals_computed = 0  # Only count values computed for EMPTY fields
+    warnings = []  # Validation warnings (mismatches)
     
     # Get numeric columns
     numeric_cols = [name for name, info in column_types.columns.items()
@@ -1537,7 +1543,7 @@ def recompute_totals(
             
             for data_row_idx in section.data_rows:
                 data_row = corrected_rows[data_row_idx]
-                label = str(data_row.get("Label", "")).upper()
+                label = str(data_row.get("Label", data_row.get("label", ""))).upper()
                 
                 val = _parse_numeric_safe(str(data_row.get(col, "")))
                 if val is not None:
@@ -1553,51 +1559,66 @@ def recompute_totals(
             if not has_values:
                 continue
             
-            actual_total = _parse_numeric_safe(str(total_row.get(col, "")))
+            actual_total_str = str(total_row.get(col, "")).strip()
+            actual_total = _parse_numeric_safe(actual_total_str)
             
-            # Check if correction needed
-            if actual_total is None:
-                # Missing total - compute it
+            # CASE 1: Value is MISSING/EMPTY - we can compute it
+            if actual_total is None or actual_total_str in ("", "-", "—"):
                 if apply_corrections:
                     total_row[col] = _format_number_enhanced(expected_sum)
-                    corrections_made.append({
-                        "type": "total_computed",
-                        "section": section.section_name,
-                        "column": col,
-                        "computed_value": expected_sum,
-                        "components": component_values
-                    })
-                    totals_corrected += 1
+                    totals_computed += 1
+                validations.append({
+                    "type": "total_computed",
+                    "action": "computed_missing_value",
+                    "section": section.section_name,
+                    "column": col,
+                    "computed_value": expected_sum,
+                    "components": component_values,
+                    "was_empty": True
+                })
+            
+            # CASE 2: Value EXISTS - NEVER overwrite, only validate
             elif abs(expected_sum - actual_total) > 2.0:
-                # Significant mismatch - consider correction
                 diff = abs(expected_sum - actual_total)
                 diff_percent = diff / abs(actual_total) * 100 if actual_total != 0 else 100
                 
-                # Only correct if difference is significant but not huge
-                # (huge differences might indicate missing rows, not wrong total)
-                if apply_corrections and diff_percent < 50:
-                    old_value = total_row.get(col, "")
-                    total_row[col] = _format_number_enhanced(expected_sum)
-                    corrections_made.append({
-                        "type": "total_corrected",
-                        "section": section.section_name,
-                        "column": col,
-                        "old_value": actual_total,
-                        "new_value": expected_sum,
-                        "difference": diff,
-                        "diff_percent": diff_percent
-                    })
-                    totals_corrected += 1
+                # CRITICAL: DO NOT MODIFY - only log warning
+                warnings.append({
+                    "type": "total_mismatch",
+                    "severity": "warning",
+                    "action": "validation_only",  # NOT corrected
+                    "section": section.section_name,
+                    "column": col,
+                    "extracted_value": actual_total,  # This is the SOURCE OF TRUTH
+                    "computed_value": expected_sum,
+                    "difference": diff,
+                    "diff_percent": diff_percent,
+                    "message": f"Extracted value {actual_total} differs from computed sum {expected_sum} by {diff_percent:.1f}%"
+                })
+                totals_validated += 1
+            else:
+                # Values match - validation passed
+                totals_validated += 1
+                validations.append({
+                    "type": "total_validated",
+                    "action": "validation_passed",
+                    "section": section.section_name,
+                    "column": col,
+                    "value": actual_total
+                })
     
-    # Validate balance sheet identity
+    # Validate balance sheet identity (NON-DESTRUCTIVE)
     balance_check = validate_balance_sheet_identity(corrected_rows, column_types)
+    
+    # Add warnings to validations for output
+    validations.extend(warnings)
     
     return FinancialRecomputationResult(
         corrected_rows=corrected_rows,
-        corrections_made=corrections_made,
+        corrections_made=validations,  # Now contains validations + warnings, not corrections
         balance_sheet_valid=balance_check.get("identity_valid", True),
         balance_sheet_difference=balance_check.get("difference"),
-        totals_corrected=totals_corrected
+        totals_corrected=totals_computed  # Only counts computed MISSING values
     )
 
 
@@ -2044,22 +2065,21 @@ def apply_aggressive_realignment_safe(
     current_confidence: float
 ) -> Tuple[List[Dict], List[ShiftCorrection]]:
     """
-    STEP 4 (SAFE VERSION): Column Shift Correction with strict constraints.
+    STEP 4 (VALIDATION ONLY): Column Shift Detection - NON-DESTRUCTIVE
     
-    ONLY shift values if ALL conditions are met:
-        - Value is numerically inconsistent with row context
-        - Value is abnormally small (< 1% of row total)
-        - Another column contains a plausible replacement
-        - Confidence is sufficient
+    CRITICAL FIX (v3.1):
+        - NEVER modifies extracted values
+        - Only DETECTS potential misalignments
+        - Reports as WARNINGS for manual review
+        - Returns ORIGINAL rows unchanged
     
-    DO NOT shift if:
-        - Value could be valid (0, 1, small real values like margins)
-        - No strong evidence of misalignment
+    OCR-extracted values are the SOURCE OF TRUTH.
     """
-    corrected_rows = copy.deepcopy(rows)
-    corrections = []
+    # CRITICAL: Return original rows - DO NOT modify
+    # We only detect and warn, never correct
+    warnings = []
     
-    # STEP 4 CONSTRAINT: Calculate overall statistics
+    # Calculate overall statistics for context
     all_numeric_values = []
     numeric_cols = [name for name, info in column_types.columns.items()
                     if info.detected_role in (ColumnRole.DATE_CURRENT, ColumnRole.DATE_PREVIOUS,
@@ -2074,20 +2094,20 @@ def apply_aggressive_realignment_safe(
                 all_numeric_values.append(abs(val))
     
     if not all_numeric_values:
-        return corrected_rows, corrections
+        return rows, []  # Return original, no warnings
     
     overall_median = statistics.median(all_numeric_values)
     
-    # CONSTRAINT: Only proceed if we have large values context
+    # Only analyze if we have large values context
     if overall_median < 10000:
-        return corrected_rows, corrections
+        return rows, []
     
     # Find note column
     note_cols = [name for name, info in column_types.columns.items() 
                  if info.detected_role == ColumnRole.NOTE]
     note_col = note_cols[0] if note_cols else None
     
-    for i, row in enumerate(corrected_rows):
+    for i, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
         
@@ -2104,7 +2124,6 @@ def apply_aggressive_realignment_safe(
                 row_total += abs(val)
                 row_values.append(abs(val))
         
-        # Skip rows with no data
         if row_total == 0:
             continue
         
@@ -2115,69 +2134,41 @@ def apply_aggressive_realignment_safe(
             if val is None:
                 continue
             
-            # CONSTRAINT 1: Value must be abnormally small
-            # Use 1% of row total as threshold (more conservative than fixed 50)
+            # Detect anomaly
             anomaly_threshold = min(50, row_total * 0.01) if row_total > 0 else 50
             
             if abs(val) >= anomaly_threshold:
                 continue
             
-            # CONSTRAINT 2: Other values in row must be large (confirms context)
             other_values = [v for v in row_values if v != abs(val)]
             if not other_values or statistics.median(other_values) < 1000:
                 continue
             
-            # CONSTRAINT 3: Note column must be empty (has somewhere to go)
-            current_note = str(row.get(note_col, "")).strip() if note_col else ""
-            if not note_col or (current_note and current_note not in ("-", "—", "")):
-                continue
+            # DETECTED a potential misalignment - DO NOT CORRECT, just warn
+            warnings.append(ShiftCorrection(
+                row_index=i,
+                shift_direction="potential_left",  # Indicates DETECTION, not action
+                columns_affected=[col],
+                values_shifted={col: val_str},
+                reason=f"POTENTIAL MISALIGNMENT DETECTED: Value {val} in column '{col}' appears abnormally small (threshold: {anomaly_threshold:.0f}). Manual review recommended.",
+                confidence=current_confidence
+            ))
             
-            # CONSTRAINT 4: Check if there's a valid value to shift in from next column
-            next_col_idx = col_idx + 1
-            has_replacement = False
-            if next_col_idx < len(numeric_cols):
-                next_val = _parse_numeric_safe(str(row.get(numeric_cols[next_col_idx], "")))
-                if next_val is not None and abs(next_val) > anomaly_threshold:
-                    has_replacement = True
-            
-            if not has_replacement:
-                continue
-            
-            # All constraints met - apply correction
-            row[note_col] = val_str
-            
-            # Shift values left
-            cols_to_shift = numeric_cols[col_idx:]
-            for j, shift_col in enumerate(cols_to_shift[:-1]):
-                next_col = cols_to_shift[j + 1]
-                row[shift_col] = row.get(next_col, "")
-            
-            if cols_to_shift:
-                row[cols_to_shift[-1]] = ""
-            
-            # Log the correction
+            # Log as warning, not correction
             log_correction(
                 field=col,
-                row_label=str(row.get("label", f"Row {i}")),
+                row_label=str(row.get("label", row.get("Label", f"Row {i}"))),
                 row_index=i,
                 old_value=val_str,
-                new_value=note_col,
-                reason=f"Small value ({val}) < {anomaly_threshold:.0f} threshold moved to Note",
-                correction_type="column_shift",
+                new_value=val_str,  # Same value - NO CHANGE
+                reason=f"POTENTIAL MISALIGNMENT WARNING: Small value ({val}) detected in financial column. No automatic correction applied.",
+                correction_type="warning_only",
                 confidence=current_confidence
             )
-            
-            corrections.append(ShiftCorrection(
-                row_index=i,
-                shift_direction="left",
-                columns_affected=cols_to_shift,
-                values_shifted={col: val_str},
-                reason=f"Small value ({val}) < {anomaly_threshold:.0f} threshold moved to Note",
-                confidence=min(0.9, current_confidence)
-            ))
-            break  # Only one correction per row
+            break
     
-    return corrected_rows, corrections
+    # CRITICAL: Return ORIGINAL rows unchanged
+    return rows, warnings
 
 
 def recompute_totals_balance_sheet(
@@ -2401,53 +2392,53 @@ class SafePipelineResult:
 
 def run_safe_pipeline(
     data: Dict,
-    apply_corrections: bool = True,
+    apply_corrections: bool = False,  # CRITICAL FIX: Default to False - NEVER modify by default
     strict_mode: bool = True,
-    aggressive_mode: bool = False  # STEP 2: Default to False for safety
+    aggressive_mode: bool = False  # CRITICAL FIX: Default to False
 ) -> SafePipelineResult:
     """
-    Run the complete safe pipeline improvements with CONFIDENCE GATING.
+    Run the complete safe pipeline improvements - NON-DESTRUCTIVE MODE.
     
-    PRODUCTION HARDENING (v3.0):
-        - Confidence gating controls ALL corrections
-        - Table-type isolation ensures correct logic applied
-        - Raw data protected via deep copy
-        - Full audit trail for all corrections
+    CRITICAL FIX (v3.1):
+        - DEFAULT is NON-DESTRUCTIVE (apply_corrections=False)
+        - OCR extracted values are SOURCE OF TRUTH
+        - Only VALIDATES, does not overwrite
+        - Mismatches are flagged as WARNINGS
+        - _raw_rows is NEVER modified
     
     Args:
         data: Extracted table data {"columns": [...], "rows": [...]}
-        apply_corrections: If True, apply Phase 3 corrections (subject to gating)
+        apply_corrections: If True, only compute MISSING values (never overwrite existing)
         strict_mode: If True, only apply highest-confidence corrections
-        aggressive_mode: If True AND confidence >= 0.85, apply enhanced corrections
+        aggressive_mode: DEPRECATED - kept for API compatibility, does not enable overwrites
     
     Returns:
-        SafePipelineResult with all phase results
+        SafePipelineResult with validation results (not corrections)
     """
     columns = data.get("columns", [])
     rows = data.get("rows", [])
     title = data.get("table_name", data.get("title", None))
     
-    # STEP 9: Protect raw data - work on a copy
+    # CRITICAL: Protect raw data - work on a copy, NEVER modify original
     working_rows = protect_raw_data(rows)
     
-    # Phase 1: Column Type Detection (ALWAYS run - no corrections)
+    # Phase 1: Column Type Detection (ALWAYS run - detection only)
     column_types = detect_column_types_enhanced(working_rows, columns)
     
-    # Phase 2: Safe Validation (ALWAYS run - detection only, no corrections)
+    # Phase 2: Safe Validation (ALWAYS run - detection only)
     validation_result = validate_column_consistency(working_rows, column_types)
     
-    # Phase 6: Table Type Detection (EARLY - needed for gating)
+    # Phase 6: Table Type Detection
     table_type = detect_table_type_enhanced(working_rows, title)
     detected_table_type = table_type["table_type"]
     
-    # Compute preliminary confidence for gating decisions
-    # (We'll recompute more accurately after corrections)
+    # Compute confidence
     preliminary_total_validation = validate_totals_improved(working_rows, column_types)
     preliminary_confidence = compute_meaningful_confidence(
         working_rows, column_types, validation_result, preliminary_total_validation
     )
     
-    # STEP 1: Determine correction mode based on confidence
+    # CRITICAL FIX: Determine correction mode - but NEVER allow destructive corrections
     correction_mode = should_apply_corrections(
         preliminary_confidence.final_score, 
         aggressive_mode
@@ -2459,36 +2450,34 @@ def run_safe_pipeline(
     cash_flow_recovery = None
     shift_corrections = None
     consistency_check = None
+    
+    # CRITICAL: Start with original rows - minimal modifications only
     corrected_rows = working_rows
     
-    # Phase 3: Controlled Realignment (SAFE correction - allowed at "safe" or "aggressive")
-    if apply_corrections and correction_mode in ("safe", "aggressive"):
+    # Phase 3: Controlled Realignment - VALIDATION ONLY
+    # Only detect potential issues, do not modify
+    if correction_mode in ("safe", "aggressive"):
         realignment_result = controlled_realignment(
             corrected_rows, column_types, validation_result, strict_mode
         )
-        corrected_rows = realignment_result.corrected_rows
+        # CRITICAL FIX: Only take corrected rows if explicitly enabled AND low-risk
+        if apply_corrections and realignment_result.corrections:
+            # Only apply if corrections are minimal and safe
+            if len(realignment_result.corrections) <= 2:
+                corrected_rows = realignment_result.corrected_rows
     
-    # STEP 5: Enhanced Cash Flow Recovery (AGGRESSIVE - only at high confidence)
-    # STEP 6: Table-type isolation - only apply to cash_flow tables
-    if correction_mode == "aggressive" and detected_table_type == "cash_flow":
-        corrected_rows, cash_flow_recovery = recover_cash_flow_column(
-            corrected_rows, column_types, columns
-        )
-        if cash_flow_recovery and cash_flow_recovery.recovery_applied:
-            # Re-detect column types after recovery
-            column_types = detect_column_types_enhanced(corrected_rows, columns)
-    elif not column_types.detected_date_order:
-        # Even without aggressive mode, try recovery if no date columns found
-        # But with stricter validation (STEP 5 constraints)
+    # Cash Flow Recovery - Only if date columns are missing
+    if not column_types.detected_date_order:
         corrected_rows, cash_flow_recovery = recover_cash_flow_column_safe(
             corrected_rows, column_types, columns
         )
         if cash_flow_recovery and cash_flow_recovery.recovery_applied:
             column_types = detect_column_types_enhanced(corrected_rows, columns)
     
-    # STEP 4: Enhanced Shift Correction (AGGRESSIVE - only at high confidence)
-    if correction_mode == "aggressive" and apply_corrections:
-        corrected_rows, shift_corrections = apply_aggressive_realignment_safe(
+    # STEP 4: Shift Detection - VALIDATION ONLY (never modifies)
+    if correction_mode == "aggressive":
+        # This function now only DETECTS, never modifies
+        _, shift_corrections = apply_aggressive_realignment_safe(
             corrected_rows, column_types, columns, preliminary_confidence.final_score
         )
     
@@ -2496,48 +2485,27 @@ def run_safe_pipeline(
     sections = detect_sections_improved(corrected_rows)
     total_validation = validate_totals_improved(corrected_rows, column_types)
     
-    # STEP 7: Enhanced Financial Recomputation (AGGRESSIVE - gated)
-    # STEP 6: Table-type isolation - apply appropriate rules
-    if correction_mode == "aggressive" and apply_corrections:
-        if detected_table_type == "balance_sheet":
-            financial_recomputation = recompute_totals_balance_sheet(
-                corrected_rows, column_types, sections, 
-                apply_corrections=True,
-                confidence=preliminary_confidence.final_score
-            )
-        elif detected_table_type == "income_statement":
-            financial_recomputation = recompute_totals_income_statement(
-                corrected_rows, column_types, sections,
-                apply_corrections=True,
-                confidence=preliminary_confidence.final_score
-            )
-        elif detected_table_type == "cash_flow":
-            financial_recomputation = recompute_totals_cash_flow(
-                corrected_rows, column_types, sections,
-                apply_corrections=True,
-                confidence=preliminary_confidence.final_score
-            )
-        else:
-            # Generic recomputation for unknown table types
-            financial_recomputation = recompute_totals(
-                corrected_rows, column_types, sections, 
-                apply_corrections=True
-            )
-        
-        if financial_recomputation:
-            corrected_rows = financial_recomputation.corrected_rows
+    # STEP 7: Financial VALIDATION (NOT recomputation)
+    # CRITICAL: apply_corrections=False means NEVER overwrite existing values
+    # Only compute values for EMPTY fields
+    financial_recomputation = recompute_totals(
+        corrected_rows, column_types, sections, 
+        apply_corrections=apply_corrections  # Only fills EMPTY fields
+    )
+    if financial_recomputation:
+        corrected_rows = financial_recomputation.corrected_rows
     
-    # Cross-Section Consistency Check (run regardless of mode for diagnostics)
+    # Cross-Section Consistency Check (always run for diagnostics)
     consistency_check = check_cross_section_consistency(
         corrected_rows, column_types, detected_table_type
     )
     
-    # Phase 5: Final Confidence Scoring (after all corrections)
+    # Phase 5: Final Confidence Scoring
     confidence = compute_meaningful_confidence(
         corrected_rows, column_types, validation_result, total_validation
     )
     
-    # Adjust confidence based on enhanced checks
+    # Adjust confidence based on consistency checks
     if consistency_check and not consistency_check.overall_consistent:
         confidence = ConfidenceBreakdown(
             schema_validity=confidence.schema_validity,
@@ -2549,12 +2517,12 @@ def run_safe_pipeline(
             final_score=max(0.0, confidence.final_score - 0.1 - len(consistency_check.checks_failed) * 0.05)
         )
     
-    # Phase 7: Reliability Assessment (STEP 8 - Enhanced)
+    # Phase 7: Reliability Assessment
     reliability = assess_reliability(
         column_types, validation_result, total_validation, confidence
     )
     
-    # STEP 8: Add additional unreliable reasons
+    # Add unreliable reasons
     if not column_types.detected_date_order:
         reliability.unreliable_reasons.append("missing_date_columns")
     if total_validation.total_errors:
@@ -2654,31 +2622,31 @@ def run_safe_pipeline(
 
 def enhance_extraction_result(
     data: Dict, 
-    apply_corrections: bool = True,
-    aggressive_mode: bool = False  # STEP 2: Default to False for safety
+    apply_corrections: bool = False,  # CRITICAL FIX: Default to False - NEVER modify by default
+    aggressive_mode: bool = False  # CRITICAL FIX: Default to False
 ) -> Dict:
     """
     Integration helper: Run safe pipeline and attach metadata to existing result.
     
-    PRODUCTION HARDENING (v3.0):
-        - Confidence gating controls ALL corrections
-        - aggressive_mode defaults to False
-        - Full correction traceability
-        - Raw data protected via deep copy
-        - Fail-safe returns original on error
+    CRITICAL FIX (v3.1) - NON-DESTRUCTIVE MODE:
+        - DEFAULT is apply_corrections=False (NEVER modify)
+        - OCR extracted values are SOURCE OF TRUTH
+        - Only VALIDATES and reports warnings
+        - _raw_rows is NEVER modified
+        - Returns original data with validation metadata attached
     
     Args:
         data: Existing extraction result {"columns": [...], "rows": [...]}
-        apply_corrections: If True, replace rows with corrected version
-        aggressive_mode: If True AND confidence >= 0.85, apply enhanced corrections
+        apply_corrections: If True, only compute MISSING values (never overwrite)
+        aggressive_mode: DEPRECATED - kept for API compatibility
     
     Returns:
-        Enhanced data dict with metadata and optionally corrected rows
+        Enhanced data dict with validation metadata (rows unchanged by default)
     """
     if not isinstance(data, dict) or "rows" not in data:
         return data
     
-    # STEP 9: Protect raw data - store immutable copy
+    # CRITICAL: Protect raw data - store immutable copy FIRST
     if "_raw_rows" not in data:
         data["_raw_rows"] = copy.deepcopy(data.get("rows", []))
     
@@ -2686,14 +2654,14 @@ def enhance_extraction_result(
     reset_corrections_log()
     
     try:
-        # Run safe pipeline with confidence-gated corrections
+        # Run safe pipeline in VALIDATION-ONLY mode by default
         result = run_safe_pipeline(
             data, 
-            apply_corrections=apply_corrections,
+            apply_corrections=apply_corrections,  # Default: False = validation only
             aggressive_mode=aggressive_mode
         )
         
-        # Get effective correction mode based on confidence
+        # Get effective correction mode
         effective_mode = should_apply_corrections(
             result.confidence.final_score, 
             aggressive_mode
@@ -2701,76 +2669,65 @@ def enhance_extraction_result(
         
         # Attach metadata
         data["_safe_pipeline"] = result.metadata
-        data["_safe_pipeline"]["_version"] = "3.0"  # Production hardened
+        data["_safe_pipeline"]["_version"] = "3.1"  # NON-DESTRUCTIVE version
+        data["_safe_pipeline"]["_mode"] = "validation_only" if not apply_corrections else "minimal_corrections"
         data["_safe_pipeline"]["_correction_mode_requested"] = "aggressive" if aggressive_mode else "safe"
         data["_safe_pipeline"]["_correction_mode_applied"] = effective_mode
         
-        # STEP 10: Fail-safe - If uncertain, return original data
-        if effective_mode == "none":
-            # Low confidence - return original data without corrections
-            data["_corrections_blocked"] = True
-            data["_corrections_blocked_reason"] = f"Confidence {result.confidence.final_score:.2f} < 0.7 threshold"
-            data["_confidence"] = result.confidence.final_score
-            data["_is_reliable"] = False
-            data["_unreliable"] = True
-            data["_unreliable_reasons"] = result.reliability.unreliable_reasons + [
-                "Low confidence blocked all corrections"
-            ]
-            data["_recommended_action"] = "manual_review_required"
-            return data
+        # CRITICAL FIX: Count actual modifications made
+        actual_corrections = 0
+        if result.financial_recomputation:
+            # Only count values computed for EMPTY fields
+            actual_corrections = sum(
+                1 for c in result.financial_recomputation.corrections_made 
+                if c.get("was_empty") or c.get("type") == "total_computed"
+            )
         
-        # Apply corrections only if allowed by gating
-        if apply_corrections and effective_mode != "none":
+        data["_safe_pipeline"]["_values_modified"] = actual_corrections
+        
+        # SAFETY ASSERTION: If corrections not requested, ensure nothing was modified
+        if not apply_corrections:
+            assert actual_corrections == 0, f"BUG: {actual_corrections} corrections applied when apply_corrections=False"
+        
+        # Return original rows unless apply_corrections=True AND we have changes
+        if apply_corrections and actual_corrections > 0:
             data["rows"] = result.corrected_rows
-            
-            # STEP 3: Full correction traceability
-            # Build combined corrections log with full details
-            corrections_log = get_corrections_log()  # Get logged corrections
-            
-            # Also add structured corrections from pipeline result
-            if result.realignment_result:
-                for c in result.realignment_result.corrections:
-                    corrections_log.append({
-                        "field": c.source_column,
-                        "row_label": str(c.row_index),
-                        "row_index": c.row_index,
-                        "old_value": c.value,
-                        "new_value": c.value,  # Value moved, not changed
-                        "reason": c.reason,
-                        "correction_type": "realignment",
-                        "confidence": result.confidence.final_score
-                    })
-            
-            if result.shift_corrections:
-                for c in result.shift_corrections:
-                    corrections_log.append({
-                        "field": ", ".join(c.columns_affected),
-                        "row_label": str(c.row_index),
-                        "row_index": c.row_index,
-                        "old_value": "shifted",
-                        "new_value": c.shift_direction,
-                        "reason": c.reason,
-                        "correction_type": "column_shift",
-                        "confidence": c.confidence
-                    })
-            
-            if result.financial_recomputation:
-                for c in result.financial_recomputation.corrections_made:
-                    corrections_log.append({
-                        "field": c.get("column", "total"),
-                        "row_label": c.get("section", "unknown"),
-                        "row_index": -1,
-                        "old_value": c.get("old_value"),
-                        "new_value": c.get("new_value") or c.get("computed_value"),
-                        "reason": c.get("type", "recomputation"),
-                        "correction_type": "recomputation",
-                        "confidence": result.confidence.final_score
-                    })
-            
-            if corrections_log:
-                data["_corrections_log"] = corrections_log
+        # else: Keep original rows unchanged
         
-        # Add reliability flags at top level for easy access
+        # Collect all warnings/validations for reporting
+        validation_log = get_corrections_log()
+        
+        # Add validation warnings from financial recomputation
+        if result.financial_recomputation:
+            for c in result.financial_recomputation.corrections_made:
+                if c.get("type") in ("total_mismatch", "total_validated"):
+                    validation_log.append({
+                        "type": c.get("type"),
+                        "action": c.get("action", "validation_only"),
+                        "section": c.get("section"),
+                        "column": c.get("column"),
+                        "extracted_value": c.get("extracted_value"),
+                        "computed_value": c.get("computed_value"),
+                        "message": c.get("message"),
+                        "severity": c.get("severity", "info")
+                    })
+        
+        # Add shift warnings (detection only)
+        if result.shift_corrections:
+            for c in result.shift_corrections:
+                validation_log.append({
+                    "type": "potential_misalignment",
+                    "action": "warning_only",
+                    "row_index": c.row_index,
+                    "columns": c.columns_affected,
+                    "message": c.reason,
+                    "severity": "warning"
+                })
+        
+        if validation_log:
+            data["_validation_warnings"] = validation_log
+        
+        # Add reliability flags
         data["_confidence"] = result.confidence.final_score
         data["_is_reliable"] = result.reliability.is_reliable
         data["_recommended_action"] = result.reliability.recommended_action
