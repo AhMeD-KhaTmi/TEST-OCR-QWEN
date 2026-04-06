@@ -1484,15 +1484,45 @@ def post_process_extraction(data: Dict) -> Dict:
             for k in keys_to_remove:
                 del row[k]
 
+    # --- Stage 8.5: SAFE PIPELINE IMPROVEMENTS (incremental reliability) ---
+    # Adds semantic column understanding, consistency validation, 
+    # controlled realignment, and meaningful confidence scoring
+    # WITHOUT breaking existing functionality
+    try:
+        from safe_pipeline_improvements import enhance_extraction_result
+        data = enhance_extraction_result(data, apply_corrections=True)
+    except ImportError:
+        # Graceful fallback if module not available
+        pass
+    except Exception as e:
+        # SAFETY: Never break existing pipeline
+        print(f"[SAFE PIPELINE] Warning: Enhancement failed, continuing without: {e}")
+
     # --- Stage 9: quality metadata ---
     quality = evaluate_table_quality(data)
     merged_meta = dict(preserved_meta)
     merged_meta['quality']  = quality
-    merged_meta['pipeline'] = 'alignment_engine_v2_with_financial_validation'
+    merged_meta['pipeline'] = 'alignment_engine_v2_with_financial_validation_safe'
     
     # Preserve validation results in meta
     if '_validation' in data:
         merged_meta['financial_validation'] = data.pop('_validation')
+    
+    # Preserve safe pipeline metadata
+    if '_safe_pipeline' in data:
+        merged_meta['safe_pipeline'] = data.pop('_safe_pipeline')
+    if '_confidence' in data:
+        merged_meta['confidence_score'] = data.pop('_confidence')
+    if '_is_reliable' in data:
+        merged_meta['is_reliable'] = data.pop('_is_reliable')
+    if '_recommended_action' in data:
+        merged_meta['recommended_action'] = data.pop('_recommended_action')
+    if '_unreliable' in data:
+        merged_meta['unreliable'] = data.pop('_unreliable')
+        if '_unreliable_reasons' in data:
+            merged_meta['unreliable_reasons'] = data.pop('_unreliable_reasons')
+    if '_corrections_log' in data:
+        merged_meta['corrections_log'] = data.pop('_corrections_log')
     
     data['meta'] = merged_meta
 
